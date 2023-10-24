@@ -401,7 +401,6 @@ Model.Sim <- function(Parm) {
     agent_status[sample(which(agent_status[, "HAdV"] == "I"), HAdV_I2R), "HAdV"] <- "R"
     agent_status[sample(which(agent_status[, "HAdV"] == "R"), HAdV_R2S), "HAdV"] <- "S"
 
-
     setTxtProgressBar(bar, i)
     if (i == steps) {
       close(bar)
