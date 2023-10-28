@@ -2,6 +2,7 @@
 .lintr
 .vscode/
 .gitignore
+.docx
 
 # History files
 .Rhistory
