@@ -23,7 +23,9 @@ vec ComputeInfeCase(const mat &agent_status)
 }
 
 // [[Rcpp::export]]
-mat ModelSimCpp(List Parm, int ncores)
+// given iniitial bool value of NPI at the begining of the function, it will be changed to true after the function
+
+mat ModelSimCpp(List Parm, int ncores, bool NPI = false, bool BaseImmu = false)
 {
     size_t years = Parm["years"];
     float dt = Parm["dt"];
@@ -55,6 +57,49 @@ mat ModelSimCpp(List Parm, int ncores)
     mat results(steps + 1, 9, fill::zeros);              // Create storage for simulation results
     results.col(0) = linspace(0, steps * dt, steps + 1); // 使用linspace来创建一个等距序列，操作与R的(0:30)一样
 
+    // NPI parameters
+    size_t NPI_start; // 注意即使不使用这些变量，也需要在这里声明，否则会报错
+    size_t NPI_end;
+    float NPI_value;
+    float decay_coef;
+    if (NPI == true)
+    {
+        NPI_start = Parm["NPI_start"];
+        NPI_end = Parm["NPI_end"];
+        NPI_value = Parm["NPI_value"];
+        decay_coef = Parm["decay_coef"];
+    }
+
+    // Base immune parameters
+    size_t base_immune_IFVA;
+    size_t base_immune_IFVB;
+    size_t base_immune_RSV;
+    size_t base_immune_HPIV;
+    size_t base_immune_HMPV;
+    size_t base_immune_HCoV;
+    size_t base_immune_HRV;
+    size_t base_immune_HAdV;
+    if (BaseImmu == true)
+    {
+        base_immune_IFVA = Parm["base_immune_IFVA"];
+        base_immune_IFVB = Parm["base_immune_IFVB"];
+        base_immune_RSV = Parm["base_immune_RSV"];
+        base_immune_HPIV = Parm["base_immune_HPIV"];
+        base_immune_HMPV = Parm["base_immune_HMPV"];
+        base_immune_HCoV = Parm["base_immune_HCoV"];
+        base_immune_HRV = Parm["base_immune_HRV"];
+        base_immune_HAdV = Parm["base_immune_HAdV"];
+
+        agent_status.submat(initial_seeds, 0, initial_seeds + base_immune_IFVA, 0).fill(-1); // 起始行、起始列、结束行和结束列
+        agent_status.submat(initial_seeds, 1, initial_seeds + base_immune_IFVB, 1).fill(-1);
+        agent_status.submat(initial_seeds, 2, initial_seeds + base_immune_RSV, 2).fill(-1);
+        agent_status.submat(initial_seeds, 3, initial_seeds + base_immune_HPIV, 3).fill(-1);
+        agent_status.submat(initial_seeds, 4, initial_seeds + base_immune_HMPV, 4).fill(-1);
+        agent_status.submat(initial_seeds, 5, initial_seeds + base_immune_HCoV, 5).fill(-1);
+        agent_status.submat(initial_seeds, 6, initial_seeds + base_immune_HRV, 6).fill(-1);
+        agent_status.submat(initial_seeds, 7, initial_seeds + base_immune_HAdV, 7).fill(-1);
+    }
+
     // Store the initial conditions
     vec infe_cases = ComputeInfeCase(agent_status);
     results.row(0).subvec(1, 8) = infe_cases.t();
@@ -69,6 +114,11 @@ mat ModelSimCpp(List Parm, int ncores)
         int time = floor(results(ts, 0));
         float seasonal_force = (1 + beta_seasonal * cos((2 * M_PI * time / 52) - beta_phi));
         vec beta = beta_value * seasonal_force;
+
+        if (NPI && (time >= NPI_start && time <= NPI_end))
+        {
+            beta = beta * NPI_value * exp(-decay_coef * (time - NPI_start));
+        }
 
 #pragma omp parallel for private(i, j) num_threads(ncores)
         for (size_t i = 0; i < N; i++) // row
