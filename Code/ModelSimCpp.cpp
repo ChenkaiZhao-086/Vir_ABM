@@ -117,7 +117,7 @@ mat ModelSimCpp(List Parm, int ncores, bool NPI = false, bool BaseImmu = false)
 
         if (NPI && (time >= NPI_start && time <= NPI_end))
         {
-            beta = beta * NPI_value * exp(-decay_coef * (time - NPI_start));
+            beta = beta * (1 - (NPI_value * exp(-decay_coef * (time - NPI_start))));
         }
 
 #pragma omp parallel for private(i, j) num_threads(ncores)
