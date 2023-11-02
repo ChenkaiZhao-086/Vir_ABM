@@ -35,12 +35,16 @@ mat ModelSimCpp(List Parm, int ncores, bool NPI = false, bool BaseImmu = false)
     size_t N = Parm["num_of_agent"];
     float beta_seasonal = Parm["beta_seasonal"];
     float beta_phi = Parm["phi"];
-    float gamma = Parm["gamma"];
-    float gamma_prob = 1 - exp(-gamma * dt);
+    // float gamma = Parm["gamma"];
+    // float gamma_prob = 1 - exp(-gamma * dt);
 
     // beta of each virus
     vec beta_value = {Parm["beta_IFVA"], Parm["beta_IFVB"], Parm["beta_RSV"], Parm["beta_HPIV"],
                       Parm["beta_HMPV"], Parm["beta_HCoV"], Parm["beta_HRV"], Parm["beta_HAdV"]};
+    // gamma of each virus
+    vec gamma_value = {Parm["gamma_IFVA"], Parm["gamma_IFVB"], Parm["gamma_RSV"], Parm["gamma_HPIV"],
+                       Parm["gamma_HMPV"], Parm["gamma_HCoV"], Parm["gamma_HRV"], Parm["gamma_HAdV"]};
+
     // competition value
     vec comp_value = {Parm["comp_IFVA"], Parm["comp_IFVB"], Parm["comp_RSV"], Parm["comp_HPIV"],
                       Parm["comp_HMPV"], Parm["comp_HCoV"], Parm["comp_HRV"], Parm["comp_HAdV"]};
@@ -138,7 +142,8 @@ mat ModelSimCpp(List Parm, int ncores, bool NPI = false, bool BaseImmu = false)
                 break;
 
                 case 1:
-                    State_probability(i, j) = gamma_prob;
+                    // State_probability(i, j) = gamma_prob;
+                    State_probability(i, j) = 1 - exp(-gamma_value(j) * dt);
                     break;
 
                 case -1:
