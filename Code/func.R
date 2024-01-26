@@ -16,7 +16,7 @@ File.CreateSubFolder <- function(path, folder) {
   return(paste0(path, folder, "/"))
 }
 
-Create.parameter <- function() {
+Create.Parmeter <- function() {
 
 }
 
@@ -24,8 +24,8 @@ Create.parameter <- function() {
 #'
 #' @description Command line interface: print message
 #'
-#' @param ... (parts of the) message to print
-#' @param WARNING boolean, to print the message in red
+#' @Parm ... (parts of the) message to print
+#' @Parm WARNING boolean, to print the message in red
 #'
 #' @keywords internal
 cli_print <- function(..., WARNING = FALSE, FORCED = FALSE) {
@@ -160,252 +160,400 @@ Parallel.Reset <- function() {
 }
 
 
-Parameter.Create <- function() {
-  parameters <- list(
+#' @title Create Parmeters for model
+#'
+#' @description Create Parmeters for model
+Parameter.Create <- function(
     # Model base
     num_of_agent = 100000,
-    dt = 1 / 7, # Length of each time step in weeks [1/7]
-    years = 10,
+    dt = 1 / 7 * 2, # Length of each time step in weeks [1/7]
+    years = 16,
     initial_seeds = 10,
-    daily_new_infection = 10, # 每个病毒随机每天新引入的I
-
+    added_cases = 2, # 每个病毒随机每天新引入的I，这里是每dt2个，相当于一周14个
+    Penal = 0.5, # 感染多病毒的惩罚系数
+    # R0
+    R0_IFVA = 1.25,
+    R0_IFVB = 1.07,
+    R0_RSV = 4.5,
+    R0_PIV = 2.5,
+    R0_MPV = 1.2,
+    R0_sCoV = 4.18,
+    R0_RV = 1.88,
+    R0_AdV = 5.1,
     # Transmission rate
-    beta_IFV = 1,
     beta_IFVA = 1,
     beta_IFVB = 1,
     beta_RSV = 1,
-    beta_HPIV = 1,
-    beta_HMPV = 1,
-    beta_HCoV = 1,
-    beta_HRV = 1,
-    beta_HAdV = 1,
-
+    beta_PIV = 1,
+    beta_MPV = 1,
+    beta_sCoV = 1,
+    beta_RV = 1,
+    beta_AdV = 1,
     # Seasonal force
-    beta_seasonal = 1,
-
+    beta_seasonal = 0.2,
+    phi = 12,
     # Duration of infectious
-    gamma = 1 / 7,
-
+    # gamma = 1 / 7, #
+    gamma_IFVA = 1 / 6 * 2, # 1 / 7, #
+    gamma_IFVB = 1 / 4 * 2, # 1 / 7, #
+    gamma_RSV = 1 / 6.4 * 2, # 1 / 7, #
+    gamma_PIV = 1 / 9.8 * 2, # 1 / 7, #
+    gamma_MPV = 1 / 5 * 2, # 1 / 7, #
+    gamma_sCoV = 1 / 15.2 * 2, # 1 / 7, #
+    gamma_RV = 1 / 10.9 * 2, # 1 / 7, #
+    gamma_AdV = 1 / 7 * 2,
     # Duration of immunity of each virus
-    omega_IFV = 1 / 365,
-    omega_IFVA = 1 / 150,
-    omega_IFVB = 1 / 150,
-    omega_RSV = 1 / 150,
-    omega_HPIV = 1 / 150,
-    omega_HMPV = 1 / 150,
-    omega_HCoV = 1 / 150,
-    omega_HRV = 1 / 150,
-    omega_HAdV = 1 / 150,
-
+    omega_IFVA = 1 / (365 * 2) * 2, # 150, #
+    omega_IFVB = 1 / 424.1 * 2, # 150, #
+    omega_RSV = 1 / 358.9 * 2, # 150, #
+    omega_PIV = 1 / 303 * 2, # 150, #
+    omega_MPV = 1 / 657 * 2, # 150, #
+    omega_sCoV = 1 / 259 * 2, # 150, #
+    omega_RV = 1 / 36.5 * 2, # 150, #
+    omega_AdV = 1 / 365 * 2, # 150, #
     # Virus competition
-    comp_IFV = 1 / 150,
-    comp_IFVA = 1 / 150,
-    comp_IFVB = 1 / 150,
-    comp_RSV = 1 / 150,
-    comp_HPIV = 1 / 150,
-    comp_HMPV = 1 / 150,
-    comp_HCoV = 1 / 150,
-    comp_HRV = 1 / 150,
-    comp_HAdV = 1 / 150
-  )
+    comp_IFVA = 1,
+    comp_IFVB = 1,
+    comp_RSV = 1,
+    comp_PIV = 1,
+    comp_MPV = 1,
+    comp_sCoV = 1,
+    comp_RV = 1,
+    comp_AdV = 1,
+    # NPI
+    NPI_start = 624, # 第12年, 428第八年的三月
+    NPI_end = 676, # 第13年
+    NPI_value = 0.8, # range[0,1] 1 means totally no transmission(Full NPI), 0 means no NPI(free transimiison)
+    decay_coef = 0.01, # range[0,Inf] 0 means no decay
+    # Base immunity
+    base_immune_IFVA = 40000,
+    base_immune_IFVB = 40000,
+    base_immune_RSV = 40000,
+    base_immune_PIV = 40000,
+    base_immune_MPV = 40000,
+    base_immune_sCoV = 40000,
+    base_immune_RV = 40000,
+    base_immune_AdV = 40000) {
+  beta_IFVA <- (R0_IFVA * gamma_IFVA) / (1 + beta_seasonal) #  R0_IFVA * gamma_IFVA #
+  beta_IFVB <- (R0_IFVB * gamma_IFVB) / (1 + beta_seasonal) # R0_IFVB * gamma_IFVB # 
+  beta_RSV <- (R0_RSV * gamma_RSV) / (1 + beta_seasonal) # R0_RSV * gamma_RSV # 
+  beta_PIV <- (R0_PIV * gamma_PIV) / (1 + beta_seasonal) # R0_PIV * gamma_PIV # 
+  beta_MPV <- (R0_MPV * gamma_MPV) / (1 + beta_seasonal) # R0_MPV * gamma_MPV # 
+  beta_sCoV <- (R0_sCoV * gamma_sCoV) / (1 + beta_seasonal) # R0_sCoV * gamma_sCoV # 
+  beta_RV <- (R0_RV * gamma_RV) / (1 + beta_seasonal) # R0_RV * gamma_RV # 
+  beta_AdV <- (R0_AdV * gamma_AdV) / (1 + beta_seasonal) # R0_AdV * gamma_AdV # 
+  Parmeters <-
+    list(
+      # Model base
+      num_of_agent = num_of_agent,
+      dt = dt,
+      years = years,
+      initial_seeds = initial_seeds,
+      added_cases = added_cases,
+      Penal = Penal,
 
-  return(parameters)
+      # Seasonal force
+      beta_seasonal = beta_seasonal,
+      phi = phi,
+
+      # Duration of infectious
+      gamma = gamma,
+
+      # Transmission rate
+      beta_IFVA = beta_IFVA,
+      beta_IFVB = beta_IFVB,
+      beta_RSV = beta_RSV,
+      beta_PIV = beta_PIV,
+      beta_MPV = beta_MPV,
+      beta_sCoV = beta_sCoV,
+      beta_RV = beta_RV,
+      beta_AdV = beta_AdV,
+
+      # Duration of infectious
+      gamma_IFVA = gamma_IFVA,
+      gamma_IFVB = gamma_IFVB,
+      gamma_RSV = gamma_RSV,
+      gamma_PIV = gamma_PIV,
+      gamma_MPV = gamma_MPV,
+      gamma_sCoV = gamma_sCoV,
+      gamma_RV = gamma_RV,
+      gamma_AdV = gamma_AdV,
+
+      # Duration of immunity of each virus
+      omega_IFVA = omega_IFVA,
+      omega_IFVB = omega_IFVB,
+      omega_RSV = omega_RSV,
+      omega_PIV = omega_PIV,
+      omega_MPV = omega_MPV,
+      omega_sCoV = omega_sCoV,
+      omega_RV = omega_RV,
+      omega_AdV = omega_AdV,
+
+      # Virus competition
+      comp_IFVA = comp_IFVA,
+      comp_IFVB = comp_IFVB,
+      comp_RSV = comp_RSV,
+      comp_PIV = comp_PIV,
+      comp_MPV = comp_MPV,
+      comp_sCoV = comp_sCoV,
+      comp_RV = comp_RV,
+      comp_AdV = comp_AdV,
+
+      # NPI
+      NPI_start = NPI_start,
+      NPI_end = NPI_end,
+      NPI_value = NPI_value,
+      decay_coef = decay_coef,
+
+      # Base immunity
+      base_immune_IFVA = base_immune_IFVA,
+      base_immune_IFVB = base_immune_IFVB,
+      base_immune_RSV = base_immune_RSV,
+      base_immune_PIV = base_immune_PIV,
+      base_immune_MPV = base_immune_MPV,
+      base_immune_sCoV = base_immune_sCoV,
+      base_immune_RV = base_immune_RV,
+      base_immune_AdV = base_immune_AdV
+    )
+
+  return(Parmeters)
 }
 
-Model.Sim <- function(Parm) {
-  # Time steps to run simulation
-  steps <- (52 * Parm$years) / Parm$dt
-  initial_seeds <- Parm$initial_seeds
-  N <- Parm$num_of_agent
-  dt <- Parm$dt
-
-  # Create storage for all agent
-  agent_status <- data.frame(
-    IFV = rep("S", Parm$num_of_agent),
-    IFVA = rep("S", Parm$num_of_agent),
-    IFVB = rep("S", Parm$num_of_agent),
-    RSV = rep("S", Parm$num_of_agent),
-    HPIV = rep("S", Parm$num_of_agent),
-    HMPV = rep("S", Parm$num_of_agent),
-    HCoV = rep("S", Parm$num_of_agent),
-    HRV = rep("S", Parm$num_of_agent),
-    HAdV = rep("S", Parm$num_of_agent)
+#' @title Run simulation of model and plot
+#'
+#' @description Run simulation of model and plot, the ModelSimCpp function is written in C++
+#' @Parm Parm Parmeters of model
+#' @Parm ncores number of cores to run simulation
+#' @Parm NPI whether to run NPI
+#' @Parm BaseImmu whether to run base immunity
+#' @Parm seeds random seeds
+#' @return Return a list of simulation result and plots
+Model.RunSim <- function(Parm, ncores = 6, NPI = FALSE, BaseImmu = FALSE, seeds = NULL) {
+  if (!is.null(seeds)) set.seed(seeds)
+  SimResult <- ModelSimCpp(Parm = Parm, ncores = ncores, NPI = NPI, BaseImmu = BaseImmu)
+  colnames(SimResult) <- c(
+    "time", "IFVA", "IFVB", "RSV", "PIV", "MPV", "sCoV", "RV", "AdV"
+    # , "S_IFVA", "S_IFVB", "S_RSV", "S_PIV", "S_MPV", "S_sCoV", "S_RV", "S_AdV"
   )
 
-  # Seed the simulation with each virus
-  # agent_status$IFV[1:initial_seeds]  <- "I"
-  # agent_status$IFVA[1:initial_seeds] <- "I"
-  # agent_status$IFVB[1:initial_seeds] <- "I"
-  # agent_status$RSV[1:initial_seeds]  <- "I"
-  # agent_status$HPIV[1:initial_seeds] <- "I"
-  # agent_status$HMPV[1:initial_seeds] <- "I"
-  # agent_status$HCoV[1:initial_seeds] <- "I"
-  # agent_status$HRV[1:initial_seeds]  <- "I"
-  # agent_status$HAdV[1:initial_seeds] <- "I"
-  agent_status[1:initial_seeds, c("IFV", "IFVA", "IFVB", "RSV", "HPIV", "HMPV", "HCoV", "HRV", "HAdV")] <- "I"
+  fig1 <- SimResult %>%
+    as.data.frame() %>%
+    dplyr::select(1:9) %>%
+    pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
+    mutate(virus = fct_relevel(virus, c("IFVA", "IFVB", "RSV", "PIV", "MPV", "sCoV", "RV", "AdV"))) %>%
+    filter(time > 53*4) %>%
+    ggplot(., aes(x = time, y = cases)) +
+    geom_line() +
+    scale_x_continuous(breaks = seq(1, length(SimResult[, 1]), by = 52)) +
+    # scale_y_continuous(limits = c(0, 10000)) +
+    theme_bw() +
+    facet_wrap(vars(virus), nrow = 3, scales = "free_y")
 
-  # Create storage for simulation results
-  results <- data.frame(
-    time = (0:steps) * dt,
-    pop_IFV = 0,
-    pop_IFVA = 0,
-    pop_IFVB = 0,
-    pop_RSV = 0,
-    pop_HPIV = 0,
-    pop_HMPV = 0,
-    pop_HCoV = 0,
-    pop_HRV = 0,
-    pop_HAdV = 0,
-    agent1 = 0
-  )
+  # fig3 <- SimResult %>%
+  #   as.data.frame() %>%
+  #   dplyr::select(1, 10:17) %>%
+  #   pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
+  #   mutate(virus = fct_relevel(virus, c("S_IFVA", "S_IFVB", "S_RSV", "S_PIV", "S_MPV", "S_sCoV", "S_RV", "S_AdV"))) %>%
+  #   # filter(time > 100) %>%
+  #   ggplot(., aes(x = time, y = cases)) +
+  #   geom_line() +
+  #   scale_x_continuous(breaks = seq(1, length(SimResult[, 1]), by = 52)) +
+  #   # scale_y_continuous(limits = c(0, 10000)) +
+  #   theme_bw() +
+  #   facet_wrap(vars(virus), nrow = 3, scales = "free_y")
 
-  # Store the initial conditions
-  results$pop_IFV[1] <- sum(agent_status[, "IFV"] == "I", na.rm = TRUE)
-  results$pop_IFVA[1] <- sum(agent_status[, "IFVA"] == "I", na.rm = TRUE)
-  results$pop_IFVB[1] <- sum(agent_status[, "IFVB"] == "I", na.rm = TRUE)
-  results$pop_RSV[1] <- sum(agent_status[, "RSV"] == "I", na.rm = TRUE)
-  results$pop_HPIV[1] <- sum(agent_status[, "HPIV"] == "I", na.rm = TRUE)
-  results$pop_HMPV[1] <- sum(agent_status[, "HMPV"] == "I", na.rm = TRUE)
-  results$pop_HCoV[1] <- sum(agent_status[, "HCoV"] == "I", na.rm = TRUE)
-  results$pop_HRV[1] <- sum(agent_status[, "HRV"] == "I", na.rm = TRUE)
-  results$pop_HAdV[1] <- sum(agent_status[, "HAdV"] == "I", na.rm = TRUE)
-  # results$agent1[1] <- agent_status$IFV[1]
+  fig2 <- SimResult %>%
+    as.data.frame() %>%
+    dplyr::select(1:9) %>%
+    pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
+    mutate(virus = fct_relevel(virus, c("IFVA", "IFVB", "RSV", "PIV", "MPV", "sCoV", "RV", "AdV"))) %>%
+    filter(time > 53*4) %>%
+    ggplot(., aes(x = time, y = cases, colour = virus)) +
+    geom_line(alpha = 0.7) +
+    scale_x_continuous(breaks = seq(1, length(SimResult[, 1]), by = 52)) +
+    # scale_y_continuous(limits = c(0, 10000)) +
+    theme_bw()
 
-  bar <- txtProgressBar(min = 1, max = steps, style = 3)
+  # fig4 <- SimResult %>%
+  #   as.data.frame() %>%
+  #   dplyr::select(1, 10:17) %>%
+  #   pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
+  #   mutate(virus = fct_relevel(virus, c("S_IFVA", "S_IFVB", "S_RSV", "S_PIV", "S_MPV", "S_sCoV", "S_RV", "S_AdV"))) %>%
+  #   # filter(time > 100) %>%
+  #   ggplot(., aes(x = time, y = cases, colour = virus)) +
+  #   geom_line(alpha = 0.7) +
+  #   scale_x_continuous(breaks = seq(1, length(SimResult[, 1]), by = 52)) +
+  #   # scale_y_continuous(limits = c(0, 10000)) +
+  #   theme_bw()
 
-  # Run the simulation
-  for (i in 1:steps) {
-    # Save population status for this states
-    results$pop_IFV[1 + i] <- sum(agent_status[, "IFV"] == "I", na.rm = TRUE)
-    results$pop_IFVA[1 + i] <- sum(agent_status[, "IFVA"] == "I", na.rm = TRUE)
-    results$pop_IFVB[1 + i] <- sum(agent_status[, "IFVB"] == "I", na.rm = TRUE)
-    results$pop_RSV[1 + i] <- sum(agent_status[, "RSV"] == "I", na.rm = TRUE)
-    results$pop_HPIV[1 + i] <- sum(agent_status[, "HPIV"] == "I", na.rm = TRUE)
-    results$pop_HMPV[1 + i] <- sum(agent_status[, "HMPV"] == "I", na.rm = TRUE)
-    results$pop_HCoV[1 + i] <- sum(agent_status[, "HCoV"] == "I", na.rm = TRUE)
-    results$pop_HRV[1 + i] <- sum(agent_status[, "HRV"] == "I", na.rm = TRUE)
-    results$pop_HAdV[1 + i] <- sum(agent_status[, "HAdV"] == "I", na.rm = TRUE)
+  # plot(fig1)
+  # plot(fig3)
+  # plot(fig2)
+  # plot(fig4)
+  return(list(
+    Data = SimResult,
+    fig1 = fig1,
+    # fig3 = fig3,
+    fig2 = fig2 # ,
+    # fig4 = fig4
+  ))
+}
 
-    # Calculate the total infection for each virus
-    I_IFV <- sum(agent_status[, "IFV"] == "I", na.rm = TRUE)
-    I_IFVA <- sum(agent_status[, "IFVA"] == "I", na.rm = TRUE)
-    I_IFVB <- sum(agent_status[, "IFVB"] == "I", na.rm = TRUE)
-    I_RSV <- sum(agent_status[, "RSV"] == "I", na.rm = TRUE)
-    I_HPIV <- sum(agent_status[, "HPIV"] == "I", na.rm = TRUE)
-    I_HMPV <- sum(agent_status[, "HMPV"] == "I", na.rm = TRUE)
-    I_HCoV <- sum(agent_status[, "HCoV"] == "I", na.rm = TRUE)
-    I_HRV <- sum(agent_status[, "HRV"] == "I", na.rm = TRUE)
-    I_HAdV <- sum(agent_status[, "HAdV"] == "I", na.rm = TRUE)
+#' @title Find peak of each virus
+#'
+#' @description Find peak of each virus
+#' @Parm RawDat the result of ModelSimCpp
+#' @Parm StartTime the start time of virus onset, usually 290
+#' @Parm NPI_start the start time of NPI, extracted from Parm, should same as the one used in ModelSimCpp
+#' @Parm NPI_end the end time of NPI, extracted from Parm, should same as the one used in ModelSimCpp
+#' @Parm Threshold the threshold of virus onset, default is 0.2
+#' @Parm span the span of findpeaks function, default is 24
+#' @Parm Offset the offset of findpeaks function, avoid the impact of the last wave before NPI (which is lower than the
+#'               normal wave), default is 25
+#' @Parm Method the method to calculate likelihood, Loss function or just Peak
+#' @Parm TargetDat the target data to compare with, get form fread("data/target.csv")(which is the result from review)
+#' @return Return a list of peak and time of each virus, or the RMSE of Loss function, or the likelihood of Likelihood function
+FindPeak <- function(RawDat, StartTime = 290, NPI_start, NPI_end, Threshold = 0.2, span = 25, Offset = 25,
+                     Method = c("Peak", "Loss", "Likelihood"), TargetDat) {
+  RawDat <- as.data.table(RawDat)
+  RawDat$time <- floor(RawDat$time)
+  dat <- RawDat[, lapply(.SD, sum), by = time, .SDcols = IFVA:AdV]
 
-    # Calculate force of infection of each virus
-    lambda_IFV <- beta * delta * I_IFV / N
-    lambda_IFVA <- beta * delta * I_IFVA / N
-    lambda_IFVB <- beta * delta * I_IFVB / N
-    lambda_RSV <- beta * delta * I_RSV / N
-    lambda_HPIV <- beta * delta * I_HPIV / N
-    lambda_HMPV <- beta * delta * I_HMPV / N
-    lambda_HCoV <- beta * delta * I_HCoV / N
-    lambda_HRV <- beta * delta * I_HRV / N
-    lambda_HAdV <- beta * delta * I_HAdV / N
+  BeforeNPI <- dat[time > StartTime & time < NPI_start - Offset, ]
+  # AfterNPI <- dat[time > NPI_end - Offset, ]
+  AfterNPI <- dat[time > NPI_start , ] 
+  # 在V5模型中，修改了新的竞争模式，此时一些病毒可能在NPI未完全消失的时候就开始流行，因此放宽了之前在NPI结束时间提前25周寻找峰值的限制，
+  # 改为在NPI开始时间后寻找峰值，这样可以避免找不到NPI期间的峰值的问题
 
-    # Get gamma
-    gamma <- Parm$gamma
+  PeaksBeforeNPI <- lapply(BeforeNPI[, 2:9], \(x) x[splus2R::peaks(x, span = span)]) # find peaks before NPI
+  PeakThreshold <- lapply(PeaksBeforeNPI, \(x) mean(x) * Threshold) # set threshold for virus onset
+  PeaksAfterNPI <- lapply(AfterNPI[, 2:9], \(x) x[splus2R::peaks(x, span = span)]) # find peaks after NPI
+  AfterTime <- AfterNPI[, 1]
 
-    # Get omega   # 如果omega要变成一个分布，可以考虑在这里进行抽样
-    omega_IFV <- Parm$omega_IFV
-    omega_IFVA <- Parm$omega_IFVA
-    omega_IFVB <- Parm$omega_IFVB
-    omega_RSV <- Parm$omega_RSV
-    omega_HPIV <- Parm$omega_HPIV
-    omega_HMPV <- Parm$omega_HMPV
-    omega_HCoV <- Parm$omega_HCoV
-    omega_HRV <- Parm$omega_HRV
-    omega_HAdV <- Parm$omega_HAdV
+  CheckOnset <- mapply(function(x, y) x > y, PeaksAfterNPI, PeakThreshold) # CheckOnset is a list of TRUE/FALSE
+  FindPeak_after_Identify <- lapply(AfterNPI[, 2:9], splus2R::peaks, span = span) # find peaks after NPI
 
-    # p_gamma <- 1 - exp(-gamma * dt)
-    # p_omega_IFV <- 1 - exp(-omega_IFV * dt)
-
-    # Select number of event
-    ## IFV
-    IFV_S2I <- rbinom(n = 1, size = sum(agent_status[, "IFV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_IFV * dt))
-    IFV_I2R <- rbinom(n = 1, size = sum(agent_status[, "IFV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    IFV_R2S <- rbinom(n = 1, size = sum(agent_status[, "IFV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_IFV * dt))
-    ## IFVA
-    IFVA_S2I <- rbinom(n = 1, size = sum(agent_status[, "IFVA"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_IFVA * dt))
-    IFVA_I2R <- rbinom(n = 1, size = sum(agent_status[, "IFVA"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    IFVA_R2S <- rbinom(n = 1, size = sum(agent_status[, "IFVA"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_IFVA * dt))
-    ## IFVB
-    IFVB_S2I <- rbinom(n = 1, size = sum(agent_status[, "IFVB"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_IFVB * dt))
-    IFVB_I2R <- rbinom(n = 1, size = sum(agent_status[, "IFVB"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    IFVB_R2S <- rbinom(n = 1, size = sum(agent_status[, "IFVB"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_IFVB * dt))
-    ## RSV
-    RSV_S2I <- rbinom(n = 1, size = sum(agent_status[, "RSV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_RSV * dt))
-    RSV_I2R <- rbinom(n = 1, size = sum(agent_status[, "RSV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    RSV_R2S <- rbinom(n = 1, size = sum(agent_status[, "RSV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_RSV * dt))
-    ## HPIV
-    HPIV_S2I <- rbinom(n = 1, size = sum(agent_status[, "HPIV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_HPIV * dt))
-    HPIV_I2R <- rbinom(n = 1, size = sum(agent_status[, "HPIV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    HPIV_R2S <- rbinom(n = 1, size = sum(agent_status[, "HPIV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_HPIV * dt))
-    ## HMPV
-    HMPV_S2I <- rbinom(n = 1, size = sum(agent_status[, "HMPV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_HMPV * dt))
-    HMPV_I2R <- rbinom(n = 1, size = sum(agent_status[, "HMPV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    HMPV_R2S <- rbinom(n = 1, size = sum(agent_status[, "HMPV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_HMPV * dt))
-    ## HCoV
-    HCoV_S2I <- rbinom(n = 1, size = sum(agent_status[, "HCoV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_HCoV * dt))
-    HCoV_I2R <- rbinom(n = 1, size = sum(agent_status[, "HCoV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    HCoV_R2S <- rbinom(n = 1, size = sum(agent_status[, "HCoV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_HCoV * dt))
-    ## HRV
-    HRV_S2I <- rbinom(n = 1, size = sum(agent_status[, "HRV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_HRV * dt))
-    HRV_I2R <- rbinom(n = 1, size = sum(agent_status[, "HRV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    HRV_R2S <- rbinom(n = 1, size = sum(agent_status[, "HRV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_HRV * dt))
-    ## HAdV
-    HAdV_S2I <- rbinom(n = 1, size = sum(agent_status[, "HAdV"] == "S", na.rm = TRUE), prob = 1 - exp(-lambda_HAdV * dt))
-    HAdV_I2R <- rbinom(n = 1, size = sum(agent_status[, "HAdV"] == "I", na.rm = TRUE), prob = 1 - exp(-gamma * dt))
-    HAdV_R2S <- rbinom(n = 1, size = sum(agent_status[, "HAdV"] == "R", na.rm = TRUE), prob = 1 - exp(-omega_HAdV * dt))
-
-    # Choose agent
-    ## IFV
-    agent_status[sample(which(agent_status[, "IFV"] == "S"), IFV_S2I), "IFV"] <- "I"
-    agent_status[sample(which(agent_status[, "IFV"] == "I"), IFV_I2R), "IFV"] <- "R"
-    agent_status[sample(which(agent_status[, "IFV"] == "R"), IFV_R2S), "IFV"] <- "S"
-    ## IFVA
-    agent_status[sample(which(agent_status[, "IFVA"] == "S"), IFVA_S2I), "IFVA"] <- "I"
-    agent_status[sample(which(agent_status[, "IFVA"] == "I"), IFVA_I2R), "IFVA"] <- "R"
-    agent_status[sample(which(agent_status[, "IFVA"] == "R"), IFVA_R2S), "IFVA"] <- "S"
-    ## IFVB
-    agent_status[sample(which(agent_status[, "IFVB"] == "S"), IFVB_S2I), "IFVB"] <- "I"
-    agent_status[sample(which(agent_status[, "IFVB"] == "I"), IFVB_I2R), "IFVB"] <- "R"
-    agent_status[sample(which(agent_status[, "IFVB"] == "R"), IFVB_R2S), "IFVB"] <- "S"
-    ## RSV
-    agent_status[sample(which(agent_status[, "RSV"] == "S"), RSV_S2I), "RSV"] <- "I"
-    agent_status[sample(which(agent_status[, "RSV"] == "I"), RSV_I2R), "RSV"] <- "R"
-    agent_status[sample(which(agent_status[, "RSV"] == "R"), RSV_R2S), "RSV"] <- "S"
-    ## HPIV
-    agent_status[sample(which(agent_status[, "HPIV"] == "S"), HPIV_S2I), "HPIV"] <- "I"
-    agent_status[sample(which(agent_status[, "HPIV"] == "I"), HPIV_I2R), "HPIV"] <- "R"
-    agent_status[sample(which(agent_status[, "HPIV"] == "R"), HPIV_R2S), "HPIV"] <- "S"
-    ## HMPV
-    agent_status[sample(which(agent_status[, "HMPV"] == "S"), HMPV_S2I), "HMPV"] <- "I"
-    agent_status[sample(which(agent_status[, "HMPV"] == "I"), HMPV_I2R), "HMPV"] <- "R"
-    agent_status[sample(which(agent_status[, "HMPV"] == "R"), HMPV_R2S), "HMPV"] <- "S"
-    ## HCoV
-    agent_status[sample(which(agent_status[, "HCoV"] == "S"), HCoV_S2I), "HCoV"] <- "I"
-    agent_status[sample(which(agent_status[, "HCoV"] == "I"), HCoV_I2R), "HCoV"] <- "R"
-    agent_status[sample(which(agent_status[, "HCoV"] == "R"), HCoV_R2S), "HCoV"] <- "S"
-    ## HRV
-    agent_status[sample(which(agent_status[, "HRV"] == "S"), HRV_S2I), "HRV"] <- "I"
-    agent_status[sample(which(agent_status[, "HRV"] == "I"), HRV_I2R), "HRV"] <- "R"
-    agent_status[sample(which(agent_status[, "HRV"] == "R"), HRV_R2S), "HRV"] <- "S"
-    ## HAdV
-    agent_status[sample(which(agent_status[, "HAdV"] == "S"), HAdV_S2I), "HAdV"] <- "I"
-    agent_status[sample(which(agent_status[, "HAdV"] == "I"), HAdV_I2R), "HAdV"] <- "R"
-    agent_status[sample(which(agent_status[, "HAdV"] == "R"), HAdV_R2S), "HAdV"] <- "S"
-
-    setTxtProgressBar(bar, i)
-    if (i == steps) {
-      close(bar)
+  Identifier <- as.list(colnames(dat)[-1])
+  PeakAndTime <- mapply(function(Onset, PeakDat, PeakDatIdentify, AfterTime, Identifier) {
+    if (sum(Onset) == 0) { # Sum of Onset is 0 means no peak found after NPI
+      warning(sprintf("No peak found after NPI for %s", Identifier))
+      PeakIdentify <- NA
+      PeakTime <- tail(AfterTime, 1)
+    } else {
+      for (i in seq_len(length(Onset))) {
+        if (Onset[i] == TRUE) {
+          PeakIdentify <- PeakDat[i] # locate peak
+          PeakTime <- AfterTime[PeakDatIdentify][i] # locate time
+          break
+        }
+      }
     }
-  }
+    return(list(PeakIdentify, PeakTime))
+  }, CheckOnset, PeaksAfterNPI, FindPeak_after_Identify, AfterTime, Identifier)
 
-  return(results)
+  if (Method == "Peak") {
+    return(PeakAndTime)
+  } else if (Method == "Loss") {
+    PeakAndTime <- t(PeakAndTime)
+    colnames(PeakAndTime) <- c("peak", "time")
+    CombineTable <- cbind(TargetDat, PeakAndTime)
+    CombineTable <- CombineTable[, c("peak", "time") := lapply(.SD, as.numeric), .SDcols = c("peak", "time")][, ":="(PredInterval = (time - NPI_start) * 7, predict = (time - NPI_start) * 7)][, error := (mean - predict)^2]
+    Result <- sqrt(sum(CombineTable$error) / 8) # RMSE
+    return(Result)
+  } else if (Method == "Likelihood") {
+    PeakAndTime <- t(PeakAndTime)
+    colnames(PeakAndTime) <- c("peak", "time")
+    CombineTable <- cbind(TargetDat, PeakAndTime)
+    CombineTable <- CombineTable[, c("peak", "time") := lapply(.SD, as.numeric), .SDcols = c("peak", "time")
+                                 ][, ":="(PredInterval = (time - NPI_start) * 7, lambda = 1 / ((time - NPI_start) * 7))
+                                   ][, density := dexp(mean, lambda, log = TRUE)]
+    Result <- sum(CombineTable$density)
+    return(Result)
+  }
+}
+
+#' @title Run simulation and calculate likelihood
+#'
+#' @description Run simulation and calculate likelihood
+#' @Parm ... same as Model.RunSim and FindPeak
+#' @return Return the likelihood of the simulation
+Model.RunSim.LLH <- function(Parm, ncores = 6, NPI = FALSE, BaseImmu = FALSE, seeds = NULL, StartTime = 290,
+                             Threshold = 0.2, span = 25, Offset = 25, Method = "Likelihood", TargetDat) {
+  if (!is.null(seeds)) set.seed(seeds)
+
+  SimResult <- ModelSimCpp(Parm = Parm, ncores = ncores, NPI = NPI, BaseImmu = BaseImmu)
+  colnames(SimResult) <- c("time", "IFVA", "IFVB", "RSV", "PIV", "MPV", "sCoV", "RV", "AdV")
+
+  Likelihood <- FindPeak(
+    RawDat = SimResult, StartTime = StartTime, NPI_start = Parm$NPI_start, NPI_end = Parm$NPI_end,
+    Threshold = Threshold, span = span, Offset = Offset, Method = "Likelihood", TargetDat = Target
+  )
+  return(Likelihood)
+}
+
+
+Plot.SimResult <- function(data) {
+  SummResult <- lapply(1:length(data), function(id) {
+    dt <- as.data.table(data[[id]][1])
+    setnames(dt, c("time", "IFVA", "IFVB", "RSV", "PIV", "MPV", "sCoV", "RV", "AdV"))
+    # 注意data.table的setnames函数名称全部为小写，setNames是用来处理dataframe的
+    dt[, MatrixID := id]
+    return(dt)
+  })
+  SummResult <- rbindlist(SummResult)
+  # Calculate the median of each time point for each column
+  MedianSumm <- SummResult[, lapply(.SD, median), by = time]
+
+  ggplot(SummResult, aes(x = time, y = IFVA, group = MatrixID)) +
+    geom_line(alpha = 0.1) +
+    geom_line(aes(x = time, y = IFVA), data = MedianSumm, colour = "#650404", linewidth = 1.5) +
+    theme_bw()
+}
+
+MCMC.Proposal <- function(Parm, step = 5) { # mean = 0, sd = 10
+  # ParmReal <- log((1 - Parm) / Parm) / -0.1
+  # ParmUpdate <- ParmReal + runif(8, -step, step) #  rnorm(8, mean, sd)
+  # return(1 / (1 + exp(-0.1 * ParmUpdate)))
+  ParmReal <- asin((Parm - 0.5) * 2) / 0.05
+  ParmUpdate <- ParmReal + runif(8, -step, step) #  rnorm(8, mean, sd)
+  return(0.5 * sin(0.05 * ParmUpdate) + 0.5)
+}
+
+MCMC.MH <- function(Prior, n_iterations, ncores = 4, step = 10, TargetDat = TargetDat) { # mean = 0, sd = 0.5,
+  chain <- matrix(NA, nrow = n_iterations, ncol = 8)
+  chain[1, ] <- Prior
+
+  current_log_likelihood <- Model.RunSim.LLH(
+    Parm = Parameter.Create(
+      comp_IFVA = chain[1, 1], comp_IFVB = chain[1, 2], comp_RSV = chain[1, 3], comp_PIV = chain[1, 4],
+      comp_MPV = chain[1, 5], comp_sCoV = chain[1, 6], comp_RV = chain[1, 7], comp_AdV = chain[1, 8]
+    ), ncores = ncores, NPI = TRUE, StartTime = 290, Threshold = 0.4,
+    span = 25, Offset = 25, TargetDat = TargetDat
+  )
+  pb <- progress_bar$new(total = n_iterations, clear = TRUE, format = "  [:bar] :percent :etas")
+  pb$tick()
+  for (i in 2:n_iterations) {
+    proposal <- MCMC.Proposal(Parm = chain[i - 1, ], step = step) # mean = mean, sd = sd
+    proposal_log_likelihood <- Model.RunSim.LLH(
+      Parm = Parameter.Create(
+        comp_IFVA = proposal[1], comp_IFVB = proposal[2], comp_RSV = proposal[3], comp_PIV = proposal[4],
+        comp_MPV = proposal[5], comp_sCoV = proposal[6], comp_RV = proposal[7], comp_AdV = proposal[8]
+      ), ncores = ncores, NPI = TRUE, StartTime = 290, Threshold = 0.4,
+      span = 25, Offset = 25, TargetDat = TargetDat
+    )
+
+    print(sprintf("n_iteration is: %d Current LLH is: %f Proposal LLH is: %f", i, current_log_likelihood, proposal_log_likelihood))
+
+    acceptance_ratio <- exp(proposal_log_likelihood - current_log_likelihood)
+    if (runif(1) < acceptance_ratio) {
+      chain[i, ] <- proposal
+      current_log_likelihood <- proposal_log_likelihood
+    } else {
+      chain[i, ] <- chain[i - 1, ]
+    }
+
+    print(chain[i, ])
+    pb$tick()
+  }
+  return(chain)
 }
