@@ -42,7 +42,7 @@ Get.InitState <- function(
 #'
 #' @return a data.table containing the time and incidence columns for each virus
 Model.GetI <- function(Sim, virus_names = NULL, after = as.Date("2019-01-01")) {
-  dt <- Sim |> as.data.table()
+  dt <- Sim %>% as.data.table()
   dt[, time := as.Date(time, origin = "1970-01-01")]
   inc_cols <- grep("^Inc_\\d+$", names(dt), value = TRUE)
 
@@ -50,7 +50,9 @@ Model.GetI <- function(Sim, virus_names = NULL, after = as.Date("2019-01-01")) {
 
   if (!is.null(virus_names)) {
     stopifnot(length(virus_names) == length(inc_cols))
-    data.table::setnames(out, inc_cols, virus_names)
+    setnames(out, inc_cols, virus_names)
+  } else {
+    setnames(out, inc_cols, paste0("Virus_", seq_along(inc_cols)))
   }
   return(out)
 }
@@ -60,7 +62,11 @@ Model.GetI <- function(Sim, virus_names = NULL, after = as.Date("2019-01-01")) {
 #' @param Parm: a list of parameters for the ODE model
 #'
 #' @return a list containing the raw simulation output and the processed incidence data
-Model.RunSim.ode <- function(Parm) {
+Model.RunSim.ode <- function(
+  Parm,
+  virus_names = NULL,
+  after = as.Date("2019-01-01")
+) {
   # times <- seq(from = 1, to = 365 * Parm[["years"]])
   times <- as.numeric(seq(
     from = as.Date(Parm[["year_start"]]),
@@ -81,10 +87,38 @@ Model.RunSim.ode <- function(Parm) {
     parms = Parm,
     method = "rk4"
   )
-  SimResult_Inc <- Model.GetI(SimResult)
+  SimResult_Inc <- Model.GetI(
+    SimResult,
+    virus_names = virus_names,
+    after = after
+  )
+
+  # Plotting results for each virus
+  fig1 <- SimResult_Inc %>%
+    as.data.frame() %>%
+    pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
+    ggplot(., aes(x = time, y = cases)) +
+    geom_line() +
+    scale_x_date(date_labels = "%Y-%b", date_breaks = "3 months") +
+    # scale_y_continuous(limits = c(0, 10000)) +
+    theme_bw() +
+    facet_wrap(vars(virus), nrow = 4, scales = "free_y") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  # fig2 <- SimResult_Inc %>%
+  #   as.data.frame() %>%
+  #   pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
+  #   # filter(time > 53*4) %>%
+  #   ggplot(., aes(x = time, y = cases, colour = virus)) +
+  #   geom_line(alpha = 0.7) +
+  #   scale_x_continuous(breaks = seq(1, length(SimResult_Inc[, 1]), by = 52)) +
+  #   # scale_y_continuous(limits = c(0, 10000)) +
+  #   theme_bw()
 
   return(list(
     DataRaw = SimResult,
-    Data = SimResult_Inc
+    Data = SimResult_Inc,
+    fig1 = fig1
+    # fig2 = fig2
   ))
 }
