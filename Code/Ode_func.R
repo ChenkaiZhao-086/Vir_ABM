@@ -122,3 +122,85 @@ Model.RunSim.ode <- function(
     # fig2 = fig2
   ))
 }
+
+
+Model.RunSim.LLH <- function(
+  Parm,
+  after = as.Date("2015-09-05"),
+  TargetDat
+) {
+  # Run simulation
+  times <- as.numeric(seq(
+    from = as.Date(Parm[["year_start"]]),
+    to = as.Date(Parm[["year_end"]]),
+    by = 1
+  ))
+  state <- Get.InitState(
+    population = Parm[["num_of_agent"]],
+    initial_seeds = Parm[["initial_seeds"]],
+    Base_Immu = Parm[["base_immune"]],
+    n_virus = length(Parm[["beta0"]])
+  )
+  SimResult <- ode(
+    y = state,
+    times = times,
+    func = ParmInferenceCpp,
+    parms = Parm,
+    method = "rk4"
+  )
+
+  # Post process the simulation data
+  NewDat <- SimResult %>% as.data.table()
+  NewDat <- NewDat[, time := as.Date(time, origin = "1970-01-01")]
+  inc_cols <- grep("^Inc_\\d+$", names(NewDat), value = TRUE)
+  NewDat <- NewDat[
+    time >= after,
+    c("time", inc_cols),
+    with = FALSE
+  ]
+
+  # # Find Max for each virus in 12 months, and calculate the proportion
+  # NewDat <- NewDat[,
+  #   lapply(.SD, sum, na.rm = TRUE),
+  #   .SDcols = !c("yearmonth", "time"),
+  #   by = c("yearmonth")
+  # ][,
+  #   paste0(c("IAV", "IBV", "RSV", "RV"), "_roll") := lapply(.SD, max),
+  #   # lapply(.SD, function(x) frollapply(x, n = 12, FUN = max, align = "center")),
+  #   .SDcols = c("IAV", "IBV", "RSV", "RV")
+  # ][,
+  #   ":="(
+  #     IAV_prop = IAV / IAV_roll,
+  #     IBV_prop = IBV / IBV_roll,
+  #     RSV_prop = RSV / RSV_roll,
+  #     RV_prop = RV / RV_roll
+  #   )
+  # ]
+  # NewDat <- NewDat[, .(yearmonth, IAV_prop, IBV_prop, RSV_prop, RV_prop)]
+
+  # # Calculate the adjusted observed cases based on the proportion
+  # MergeDat <- merge(NewDat, TargetDat, by = "yearmonth")
+
+  # MergeDat <- MergeDat[,
+  #   ":="(
+  #     IAV_est = IAV_prop * IAV_max, # IAV_roll,
+  #     IBV_est = IBV_prop * IBV_max, # IBV_roll,
+  #     RSV_est = RSV_prop * RSV_max, # RSV_roll,
+  #     RV_est = RV_prop * RV_max
+  #   ) # RV_roll
+  # ][,
+  #   ":="(
+  #     IAV_llh = dpois(IAV, IAV_est, log = TRUE),
+  #     IBV_llh = dpois(IBV, IBV_est, log = TRUE),
+  #     RSV_llh = dpois(RSV, RSV_est, log = TRUE),
+  #     RV_llh = dpois(RV, RV_est, log = TRUE)
+  #   )
+  # ]
+
+  # # Calsulate the log likelihood
+  # LLH <- sum(
+  #   MergeDat[, grep("_llh", names(MergeDat), value = TRUE), with = FALSE],
+  #   na.rm = TRUE
+  # )
+  # return(LLH)
+}
