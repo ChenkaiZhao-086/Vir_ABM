@@ -43,7 +43,7 @@ Parameter.Create <- function(
   # NPI_value = c(0), # range[0,1] 1 means totally no transmission(Full NPI)
   # decay_coef = c(0.01) # range[0,Inf] 0 means no decay
 ) {
-  beta <- (R0 * gamma) / (1 + beta_seasonal)
+  beta0 <- (R0 * gamma) / (1 + beta_seasonal)
 
   Parmeters <-
     list(
@@ -63,7 +63,7 @@ Parameter.Create <- function(
       beta_amplify = beta_amplify,
 
       # Transmission rate
-      beta0 = c(beta_IFVA, beta_IFVB, beta_RSV, beta_RV),
+      beta0 = beta0,
 
       # Duration of infectious
       gamma = gamma,
@@ -85,11 +85,7 @@ Parameter.Create <- function(
       # decay_coef = decay_coef,
 
       # Base immunity
-      base_immune = base_immune,
-      R0_IFVA = R0_IFVA,
-      R0_IFVB = R0_IFVB,
-      R0_RSV = R0_RSV,
-      R0_RV = R0_RV
+      base_immune = base_immune
     )
   return(Parmeters)
 }
