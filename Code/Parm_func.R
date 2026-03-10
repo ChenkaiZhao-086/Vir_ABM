@@ -37,13 +37,17 @@ Parameter.Create <- function(
 
   # NPI
   NPI = TRUE,
-  NPI_value = c(0.8)
-  # NPI_start = c("2020-03-10"), # not use this param any more
-  # NPI_end = c("2020-04-10"), # not use this param any more
+  NPI_value = c(0.8),
+  NPI_start = c("2020-03-10"), # not use this param any more
+  NPI_end = c("2020-04-10") # not use this param any more
   # NPI_value = c(0), # range[0,1] 1 means totally no transmission(Full NPI)
   # decay_coef = c(0.01) # range[0,Inf] 0 means no decay
 ) {
   beta0 <- (R0 * gamma) / (1 + beta_seasonal)
+
+  NPI_start_num <- as.numeric(as.Date(NPI_start))
+  NPI_end_num <- as.numeric(as.Date(NPI_end))
+  NPI_value <- as.numeric(NPI_value)
 
   Parmeters <-
     list(
@@ -79,8 +83,8 @@ Parameter.Create <- function(
 
       # NPI
       NPI = NPI,
-      # NPI_start = as.numeric(as.Date(NPI_start)),
-      # NPI_end = as.numeric(as.Date(NPI_end)),
+      NPI_start = NPI_start_num,
+      NPI_end = NPI_end_num,
       NPI_value = NPI_value,
       # decay_coef = decay_coef,
 
