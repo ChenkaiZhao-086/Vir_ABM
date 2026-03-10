@@ -141,8 +141,9 @@ Utility.Clamp01 <- function(p, epsilon = 1e-9) {
   pmin(pmax(p, epsilon), 1 - epsilon)
 }
 
-
 Utility.Logit <- function(p) log(p / (1 - p))
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
 
 
 #' Beta-Binomial PMF log-likelihood
@@ -342,7 +343,8 @@ Model.RunSim.LLH <- function(
   Parm,
   after = as.Date("2015-08-31"),
   TargetDat,
-  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet")
+  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet"),
+  LLHArg = list()
 ) {
   # Run simulation
   SimData <- Model.RunSim.ode(Parm, Plot = FALSE, after = after)[["Data"]]
@@ -362,110 +364,50 @@ Model.RunSim.LLH <- function(
   SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
   SimData_long[, p_sim := Utility.Clamp01(p_sim)]
 
-  # Calculate log-likelihood based on the specified method
-  Method <- match.arg(Method)
-  if (Method == "RatioAbs") {
-    SimData_long <- melt(
-      SimData,
-      id.vars = c("Time", "ISOweek"),
-      variable.name = "Virus",
-      value.name = "p_sim"
-    )
-    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
-    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
-
-    # Modify TargetDat to calculate p_obs
-    TargetDat[, p_obs := (y + 0.5) / (N + 1)] # add pseudo-count for stability
+  if (Method %in% c("RatioAbs", "LogDiff", "Dirichlet")) {
+    pseudo <- LLHArg$pseudo %||% 0.5
+    TargetDat[, p_obs := (y + pseudo) / (N + 2 * pseudo)]
     TargetDat[, p_obs := Utility.Clamp01(p_obs)]
+  }
 
-    # Merge Data
-    MergeData <- SimData_long[
-      TargetDat,
-      on = c("ISOweek", "Virus"),
-      nomatch = 0
-    ]
-    setorder(MergeData, ISOweek, Virus)
+  MergeData <- SimData_long[
+    TargetDat,
+    on = c("ISOweek", "Virus"),
+    nomatch = 0
+  ]
+  setorder(MergeData, ISOweek, Virus)
+
+  # Calculate log-likelihood based on the specified method
+  if (Method == "RatioAbs") {
+    sigma_ratio <- LLHArg$sigma_ratio %||% 0.7
+    sigma_abs <- LLHArg$sigma_abs %||% 0.7
 
     LLH <- LLH.RatioAbs(
       MergeData,
       viruses = paste0("Virus_", 1:4),
-      sigma_ratio = 0.7,
-      sigma_abs = 0.7
+      sigma_ratio = sigma_ratio,
+      sigma_abs = sigma_abs
     )
   } else if (Method == "BetaBinomial") {
-    SimData_long <- melt(
-      SimData,
-      id.vars = c("Time", "ISOweek"),
-      variable.name = "Virus",
-      value.name = "p_sim"
-    )
-    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
-    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
-
-    # Merge Data
-    MergeData <- SimData_long[
-      TargetDat,
-      on = c("ISOweek", "Virus"),
-      nomatch = 0
-    ]
-    setorder(MergeData, ISOweek, Virus)
-    LLH <- LLH.BetaBinomial(
-      MergeData,
-      rho = 0.02
-    )
+    rho <- LLHArg$rho %||% 0.02
+    LLH <- LLH.BetaBinomial(MergeData, rho = rho, p_col = "p_sim")
   } else if (Method == "LogDiff") {
-    SimData_long <- melt(
-      SimData,
-      id.vars = c("Time", "ISOweek"),
-      variable.name = "Virus",
-      value.name = "p_sim"
-    )
-    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
-    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
-
-    # Modify TargetDat to calculate p_obs
-    TargetDat[, p_obs := (y + 0.5) / (N + 1)] # add pseudo-count for stability
-    TargetDat[, p_obs := Utility.Clamp01(p_obs)]
-
-    # Merge Data
-    MergeData <- SimData_long[
-      TargetDat,
-      on = c("ISOweek", "Virus"),
-      nomatch = 0
-    ]
-    setorder(MergeData, ISOweek, Virus)
+    sigma <- LLHArg$sigma %||% 0.7
+    transform <- LLHArg$transform %||% "logit"
 
     LLH <- LLH.LogDiff(
       MergeData,
-      transform = "logit",
-      sigma = 0.7
+      transform = transform,
+      sigma = sigma
     )
   } else if (Method == "Dirichlet") {
-    SimData_long <- melt(
-      SimData,
-      id.vars = c("Time", "ISOweek"),
-      variable.name = "Virus",
-      value.name = "p_sim"
-    )
-    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
-    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
-
-    # Modify TargetDat to calculate p_obs
-    TargetDat[, p_obs := (y + 0.5) / (N + 1)] # add pseudo-count for stability
-    TargetDat[, p_obs := Utility.Clamp01(p_obs)]
-
-    # Merge Data
-    MergeData <- SimData_long[
-      TargetDat,
-      on = c("ISOweek", "Virus"),
-      nomatch = 0
-    ]
-    setorder(MergeData, ISOweek, Virus)
+    kappa <- LLHArg$kappa %||% 100
+    c_add <- LLHArg$c %||% 1e-6
 
     LLH <- LLH.Dirichlet(
       Dat = MergeData,
-      kappa = 100,
-      c = 0.5
+      kappa = kappa,
+      c = c_add,
     )
   } else {
     stop("Invalid Method")
@@ -473,7 +415,17 @@ Model.RunSim.LLH <- function(
   return(LLH)
 }
 
-# MCMC --------------------------------------------
+# Markov Chain Monte Carlo sampling ----------------------
+#' Log-prior for the competition parameters, assuming they follow a log-normal distribution with mean 0 and specified standard deviation on the log scale.
+#' @param comp: a vector of competition parameters for the viruses
+#' @param sdlog: standard deviation of the log-normal distribution (default is 1)
+MCMC.LogPrior.Comp <- function(comp, sdlog = 1) {
+  z <- log(comp)
+  z <- z - mean(z) # identifiability
+  return(sum(dnorm(z, mean = 0, sd = sdlog, log = TRUE)))
+}
+
+
 MCMC.Proposal <- function(Parm, step1 = 1, step2 = 5) {
   ParmReal_comp <- log(Parm[1:4])
   ParmUpdate_comp <- ParmReal_comp + runif(4, -step1, step1)
@@ -487,67 +439,112 @@ MCMC.Proposal <- function(Parm, step1 = 1, step2 = 5) {
   return(NewParm)
 }
 
-MCMC.MH <- function(
-  Prior,
-  n_iterations,
-  ncores = 4,
-  step = 10,
-  TargetDat = TargetDat,
-  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet")
-) {
-  # mean = 0, sd = 0.5,
-  chain <- matrix(NA, nrow = n_iterations, ncol = 8)
-  chain[1, ] <- Prior
 
-  current_log_likelihood <- Model.RunSim.LLH(
-    Parm = Parameter.Create(
-      comp = c(chain[1, 1], chain[1, 2], chain[1, 3], chain[1, 4])
-    ),
-    ncores = ncores,
-    NPI = TRUE,
-    StartTime = 290,
+#'
+MCMC.Proposal <- function(Parm, step1 = 0.1) {
+  ParmReal <- log(Parm)
+  ParmUpdate <- ParmReal + runif(length(Parm), -step1, step1)
+
+  # identifiability: geometric mean(comp) = 1
+  ParmUpdate <- ParmUpdate - mean(ParmUpdate)
+
+  NewParm <- exp(ParmUpdate)
+  return(NewParm)
+}
+
+
+MCMC.MH <- function(
+  Initial,
+  n_iterations,
+  step = 0.1,
+  TargetDat = TargetDat,
+  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet"),
+  BaseParm = Parameter.Create(),
+  after = as.Date("2015-08-31"),
+  LLHArg = list(),
+  LogPriorFun = NULL,
+  verbose = TRUE
+) {
+  Method <- match.arg(Method)
+
+  if (is.null(LogPriorFun)) {
+    LogPriorFun <- function(comp) MCMC.LogPrior.Comp(comp, sdlog = 1)
+  }
+
+  Initial <- as.numeric(Initial)
+  # normalize initial comp
+  Initial <- Initial / exp(mean(log(Initial)))
+  n_comp <- length(Initial)
+  chain <- matrix(NA_real_, nrow = n_iterations, ncol = n_comp)
+  colnames(chain) <- paste0("comp_", seq_len(n_comp))
+
+  llh_trace <- rep(NA_real_, n_iterations)
+  lpr_trace <- rep(NA_real_, n_iterations)
+  lpo_trace <- rep(NA_real_, n_iterations)
+  accepted <- rep(FALSE, n_iterations)
+
+  chain[1, ] <- Initial
+
+  Parm_cur <- BaseParm
+  Parm_cur[["comp"]] <- chain[1, ]
+
+  llh_trace[1] <- Model.RunSim.LLH(
+    Parm = Parm_cur,
+    after = after,
     TargetDat = TargetDat,
-    Method = Method
+    Method = Method,
+    LLHArg = LLHArg
   )
+  lpr_trace[1] <- LogPriorFun(chain[1, ])
+  lpo_trace[1] <- llh_trace[1] + lpr_trace[1]
+
   pb <- progress_bar$new(
     total = n_iterations,
     clear = TRUE,
     format = "  [:bar] :percent :etas"
   )
   pb$tick()
+
   for (i in 2:n_iterations) {
-    proposal <- MCMC.Proposal(Parm = chain[i - 1, ], step = step) # mean = mean, sd = sd
-    proposal_log_likelihood <- Model.RunSim.LLH(
-      Parm = Parameter.Create(
-        comp = c(proposal[1], proposal[2], proposal[3], proposal[4]),
-      ),
-      ncores = ncores,
-      NPI = TRUE,
-      StartTime = 290,
+    proposal <- MCMC.Proposal(Parm = chain[i - 1, ], step = step)
+    Parm_prop <- BaseParm
+    Parm_prop[["comp"]] <- proposal
+
+    llh_prop <- Model.RunSim.LLH(
+      Parm = Parm_prop,
+      after = after,
       TargetDat = TargetDat,
-      Method = Method
+      Method = Method,
+      LLHArg = LLHArg
     )
+    lpr_prop <- LogPriorFun(proposal)
+    lpo_prop <- llh_prop + lpr_prop
+    log_alpha <- lpo_prop - lpo_trace[i - 1]
 
-    Info <- sprintf(
-      "n_iteration is: %d Current LLH is: %f Proposal LLH is: %f",
-      i,
-      current_log_likelihood,
-      proposal_log_likelihood
-    )
-    CLI.Print(Info)
+    log_alpha <- lpo_prop - lpo_trace[i - 1]
 
-    acceptance_ratio <- min(
-      1,
-      exp(proposal_log_likelihood - current_log_likelihood)
-    )
-    if (runif(1) < acceptance_ratio) {
+    if (log(runif(1)) < log_alpha) {
       chain[i, ] <- proposal
-      current_log_likelihood <- proposal_log_likelihood
+      llh_trace[i] <- llh_prop
+      lpr_trace[i] <- lpr_prop
+      lpo_trace[i] <- lpo_prop
+      accepted[i] <- TRUE
     } else {
       chain[i, ] <- chain[i - 1, ]
+      llh_trace[i] <- llh_trace[i - 1]
+      lpr_trace[i] <- lpr_trace[i - 1]
+      lpo_trace[i] <- lpo_trace[i - 1]
     }
-    print(chain[i, ])
     pb$tick()
   }
+
+  attr(chain, "LLH") <- llh_trace
+  attr(chain, "LogPrior") <- lpr_trace
+  attr(chain, "LogPost") <- lpo_trace
+  attr(chain, "Accepted") <- accepted
+  attr(chain, "AcceptanceRate") <- mean(accepted[-1])
+  attr(chain, "Method") <- Method
+  attr(chain, "LLHArg") <- LLHArg
+
   return(chain)
 }
