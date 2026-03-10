@@ -1,3 +1,5 @@
+# ODE model functions ----------------------------------
+
 #' Create the initial state vector for the ODE model.
 #'
 #' @param population: total population size
@@ -34,6 +36,7 @@ Get.InitState <- function(
   return(state)
 }
 
+
 #' Post-process the raw output from the ODE simulation to extract the incidence data.
 #'
 #' @param Sim: the raw output from the ODE simulation (a matrix)
@@ -43,10 +46,12 @@ Get.InitState <- function(
 #' @return a data.table containing the time and incidence columns for each virus
 Model.GetI <- function(Sim, virus_names = NULL, after = as.Date("2019-01-01")) {
   dt <- Sim %>% as.data.table()
-  dt[, time := as.Date(time, origin = "1970-01-01")]
+  dt[, Time := as.Date(time, origin = "1970-01-01")][,
+    ISOweek := strftime(Time, "%G-W%V")
+  ]
   inc_cols <- grep("^Inc_\\d+$", names(dt), value = TRUE)
 
-  out <- dt[time > after, c("time", inc_cols), with = FALSE]
+  out <- dt[Time >= after, c("Time", "ISOweek", inc_cols), with = FALSE]
 
   if (!is.null(virus_names)) {
     stopifnot(length(virus_names) == length(inc_cols))
@@ -57,6 +62,7 @@ Model.GetI <- function(Sim, virus_names = NULL, after = as.Date("2019-01-01")) {
   return(out)
 }
 
+
 #' Run the ODE simulation with the given parameters and return the results.
 #'
 #' @param Parm: a list of parameters for the ODE model
@@ -64,6 +70,7 @@ Model.GetI <- function(Sim, virus_names = NULL, after = as.Date("2019-01-01")) {
 #' @return a list containing the raw simulation output and the processed incidence data
 Model.RunSim.ode <- function(
   Parm,
+  Plot = TRUE,
   virus_names = NULL,
   after = as.Date("2019-01-01")
 ) {
@@ -87,120 +94,460 @@ Model.RunSim.ode <- function(
     parms = Parm,
     method = "rk4"
   )
+
   SimResult_Inc <- Model.GetI(
     SimResult,
     virus_names = virus_names,
     after = after
   )
 
-  # Plotting results for each virus
-  fig1 <- SimResult_Inc %>%
-    as.data.frame() %>%
-    pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
-    ggplot(., aes(x = time, y = cases)) +
-    geom_line() +
-    scale_x_date(date_labels = "%Y-%b", date_breaks = "3 months") +
-    # scale_y_continuous(limits = c(0, 10000)) +
-    theme_bw() +
-    facet_wrap(vars(virus), nrow = 4, scales = "free_y") +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ResultList <- list(
+    RawData = SimResult,
+    Data = SimResult_Inc
+  )
 
-  # fig2 <- SimResult_Inc %>%
-  #   as.data.frame() %>%
-  #   pivot_longer(cols = !time, names_to = "virus", values_to = "cases") %>%
-  #   # filter(time > 53*4) %>%
-  #   ggplot(., aes(x = time, y = cases, colour = virus)) +
-  #   geom_line(alpha = 0.7) +
-  #   scale_x_continuous(breaks = seq(1, length(SimResult_Inc[, 1]), by = 52)) +
-  #   # scale_y_continuous(limits = c(0, 10000)) +
-  #   theme_bw()
+  if (Plot) {
+    # Plotting results for each virus
+    fig1 <- SimResult_Inc %>%
+      as.data.frame() %>%
+      pivot_longer(cols = !Time, names_to = "virus", values_to = "cases") %>%
+      ggplot(., aes(x = Time, y = cases)) +
+      geom_line() +
+      scale_x_date(date_labels = "%Y-%b", date_breaks = "3 months") +
+      # scale_y_continuous(limits = c(0, 10000)) +
+      theme_bw() +
+      facet_wrap(vars(virus), nrow = 4, scales = "free_y") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-  return(list(
-    DataRaw = SimResult,
-    Data = SimResult_Inc,
-    fig1 = fig1
-    # fig2 = fig2
+    # fig2 <- SimResult_Inc %>%
+    #   as.data.frame() %>%
+    #   pivot_longer(cols = !Time, names_to = "virus", values_to = "cases") %>%
+    #   # filter(Time > 53*4) %>%
+    #   ggplot(., aes(x = Time, y = cases, colour = virus)) +
+    #   geom_line(alpha = 0.7) +
+    #   scale_x_continuous(breaks = seq(1, length(SimResult_Inc[, 1]), by = 52)) +
+    #   # scale_y_continuous(limits = c(0, 10000)) +
+    #   theme_bw()
+
+    ResultList$fig1 <- fig1
+    # ResultList$fig2 <- fig2
+  }
+  return(ResultList)
+}
+
+
+# Likelihood --------------------------------------------
+Utility.Clamp01 <- function(p, epsilon = 1e-9) {
+  pmin(pmax(p, epsilon), 1 - epsilon)
+}
+
+
+Utility.Logit <- function(p) log(p / (1 - p))
+
+
+#' Beta-Binomial PMF log-likelihood
+#' @param y: observed counts
+#' @param n: total counts (population size)
+#' @param p: predicted probability of infection from the model
+#' @param rho: overdispersion parameter (0 < rho < 1)
+#' @param epsilon: small value to avoid numerical issues with p and rho
+LLH.BetaBinomial.PMF <- function(y, n, p, rho, epsilon = 1e-9) {
+  p <- Utility.Clamp01(p, epsilon)
+  rho <- pmin(pmax(rho, epsilon), 1 - epsilon)
+  theta <- (1 - rho) / rho
+  a <- p * theta
+  b <- (1 - p) * theta
+  # 这里用 rho in (0,1) 表示 overdispersion（类内相关）
+  # theta = (1-rho)/rho, alpha = p*theta, beta = (1-p)*theta
+  return(lchoose(n, y) + lbeta(y + a, n - y + b) - lbeta(a, b))
+}
+
+
+#' Calculate the total log-likelihood of the observed data given the model predictions using a Beta-Binomial likelihood.
+#' @param Dat: a data.table containing columns 'y' (observed counts), 'N' (population size), and 'p_sim' (predicted probabilities from the model)
+#' @param rho: overdispersion parameter (0 < rho < 1)
+#' @param epsilon: small value to avoid numerical issues with p and rho
+LLH.BetaBinomial <- function(
+  Dat,
+  rho = 0.02,
+  viruses = NULL,
+  epsilon = 1e-9
+) {
+  return(sum(
+    LLH.BetaBinomial.PMF(Dat$y, Dat$N, Dat$p_sim, rho = rho, epsilon = epsilon),
+    na.rm = TRUE
   ))
 }
 
 
+#' Calculate the log-likelihood based on the "Ratio + Absolute Anchor" method.
+#' This method uses the log-ratio of predicted vs observed probabilities for each virus relative to a reference virus, as well as the absolute logit of the reference virus.
+#' @param Dat: a data.table containing columns 'Time', 'ISOweek', 'Virus', 'p_sim' (predicted probabilities), and 'p_obs' (observed probabilities)
+#' @param viruses: optional vector of virus names to include in the likelihood calculation (default is all viruses in the data)
+#' @param sigma_ratio: standard deviation for the log-ratio component of the likelihood
+#' @param sigma_abs: standard deviation for the absolute anchor component of the likelihood
+LLH.RatioAbs <- function(
+  Dat,
+  viruses = paste0("Virus_", 1:4),
+  sigma_ratio = 0.7,
+  sigma_abs = 0.7
+) {
+  DatWide <- dcast(
+    Dat[, .(Time, ISOweek, Virus, p_sim, p_obs)],
+    Time + ISOweek ~ Virus,
+    value.var = c("p_obs", "p_sim"),
+    sep = "__"
+  )
+
+  ref_obs_col <- paste0("p_obs__", "Virus_1")
+  ref_sim_col <- paste0("p_sim__", "Virus_1")
+  if (
+    !(ref_obs_col %in% names(DatWide)) || !(ref_sim_col %in% names(DatWide))
+  ) {
+    return(-Inf)
+  }
+  Ref_Obs <- Utility.Clamp01(DatWide[[ref_obs_col]])
+  Ref_Sim <- Utility.Clamp01(DatWide[[ref_sim_col]])
+
+  ok_ref <- is.finite(Ref_Obs) & is.finite(Ref_Sim)
+  if (!any(ok_ref)) {
+    return(-Inf)
+  }
+
+  DatWide <- DatWide[ok_ref]
+  Ref_Obs <- Ref_Obs[ok_ref]
+  Ref_Sim <- Ref_Sim[ok_ref]
+
+  # absolute anchor for ref: a_t = logit(p_ref,t)
+  Abs_Obs <- Utility.Logit(Ref_Obs)
+  Abs_Sim <- Utility.Logit(Ref_Sim)
+  LLH_Abs <- sum(
+    dnorm(Abs_Obs, mean = Abs_Sim, sd = sigma_abs, log = TRUE),
+    na.rm = TRUE
+  )
+
+  # ratios for other viruses: z_{i,t} = log(p_i,t) - log(p_ref,t)
+  others <- setdiff(viruses, "Virus_1")
+  LLH_Ratios <- 0
+  for (v in others) {
+    pObs <- DatWide[[paste0("p_obs__", v)]]
+    pSim <- DatWide[[paste0("p_sim__", v)]]
+    ok <- !is.na(pObs) & !is.na(pSim)
+    if (!any(ok)) {
+      next
+    }
+    z_obs <- log(pObs[ok]) - log(Ref_Obs[ok])
+    z_sim <- log(pSim[ok]) - log(Ref_Sim[ok])
+    LLH_Ratios <- LLH_Ratios +
+      sum(
+        dnorm(z_obs, mean = z_sim, sd = sigma_ratio, log = TRUE),
+        na.rm = TRUE
+      )
+  }
+  return(LLH_Abs + LLH_Ratios)
+}
+
+
+#' Calculate the log-likelihood based on the "Log Difference" method, which compares the log-transformed predicted probabilities to the log-transformed observed probabilities.
+#' @param Dat: a data.table containing columns 'Time', 'ISOweek', 'Virus', 'p_sim' (predicted probabilities), and 'p_obs' (observed probabilities)
+#' @param transform: the transformation to apply to the probabilities before calculating the difference ("logit" or "log")
+#' @param sigma: standard deviation for the normal distribution of the differences
+#' @param epsilon: small value to avoid numerical issues with probabilities
+LLH.LogDiff <- function(
+  Dat,
+  transform = c("logit", "log"),
+  sigma = 0.7,
+  epsilon = 1e-9
+) {
+  transform <- match.arg(transform)
+
+  # x_obs = transform(p_obs), x_Sim = transform(p_sim)
+  # x_obs ~ Normal(x_Sim, sigma)
+  if (transform == "logit") {
+    x_obs <- Utility.Logit(Dat$p_obs)
+    x_Sim <- Utility.Logit(Dat$p_sim)
+  } else {
+    x_obs <- log(Dat$p_obs)
+    x_Sim <- log(Dat$p_sim)
+  }
+
+  LLH <- sum(dnorm(x_obs, mean = x_Sim, sd = sigma, log = TRUE), na.rm = TRUE)
+  return(LLH)
+}
+
+
+#' Calculate the log PMF of a Dirichlet distribution for a given observed vector X and concentration parameters Alpha.
+#' @param X: a matrix of observed proportions (T x K) where T is the number of time points and K is the number of viruses
+#' @param Alpha: a matrix of concentration parameters (T x K) for the Dirichlet distribution, where Alpha[t, i] corresponds to the concentration parameter for virus i at time t
+LLH.Dirichlet.PMF <- function(X, Alpha) {
+  lgamma(rowSums(Alpha)) -
+    rowSums(lgamma(Alpha)) +
+    rowSums((Alpha - 1) * log(X))
+}
+
+
+#' Calculate the log-likelihood based on a Dirichlet likelihood, which compares the observed proportions of each virus to the predicted proportions from the model, accounting for overdispersion with a concentration parameter kappa.
+#' @param Dat: a data.table containing columns 'Time', 'ISOweek', 'Virus', 'p_sim' (predicted probabilities), and 'p_obs' (observed probabilities)
+#' @param kappa: concentration parameter for the Dirichlet distribution
+#' @param c: small constant added to observed counts to avoid zero counts
+LLH.Dirichlet <- function(Dat, kappa, c = 1e-6) {
+  VirNames <- sort(unique(as.character(Dat$Virus)))
+
+  DatWide <- dcast(
+    Dat[, .(Time, ISOweek, Virus, p_sim, p_obs)],
+    Time + ISOweek ~ Virus,
+    value.var = c("p_obs", "p_sim"),
+    sep = "__"
+  )
+
+  obs_cols <- paste0("p_obs__", viruses)
+  sim_cols <- paste0("p_sim__", viruses)
+
+  keep <- obs_cols %in% names(DatWide) & sim_cols %in% names(DatWide)
+  obs_cols <- obs_cols[keep]
+  sim_cols <- sim_cols[keep]
+
+  S_obs <- as.matrix(DatWide[, obs_cols, with = FALSE])
+  P_sim <- as.matrix(DatWide[, sim_cols, with = FALSE])
+
+  S_obs <- pmax(S_obs, 1e-12)
+  S_obs <- S_obs / rowSums(S_obs)
+
+  P_total <- rowSums(P_sim)
+  valid <- which(P_total > 1e-12)
+  if (length(valid) == 0) {
+    return(-Inf)
+  }
+
+  S_sim <- P_sim[valid, , drop = FALSE] / rowSums(P_sim[valid, , drop = FALSE])
+
+  Alpha <- kappa * S_sim + c
+  Alpha <- pmax(Alpha, 1e-10)
+
+  X <- S_obs[valid, , drop = FALSE]
+  X <- pmax(X, 1e-12)
+  X <- X / rowSums(X)
+
+  LLH <- sum(LLH.Dirichlet.PMF(X, Alpha))
+  return(LLH)
+}
+
+
+#' Calculate the log-likelihood based on the specified method
+#' @param Parm: a list of parameters for the ODE model
+#' @param TargetDat: a data.table containing the observed data to compare against
+#' @param Method: the method to use for calculating the likelihood
+#' @return the calculated log-likelihood value
 Model.RunSim.LLH <- function(
   Parm,
-  after = as.Date("2015-09-05"),
-  TargetDat
+  after = as.Date("2015-08-31"),
+  TargetDat,
+  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet")
 ) {
   # Run simulation
-  times <- as.numeric(seq(
-    from = as.Date(Parm[["year_start"]]),
-    to = as.Date(Parm[["year_end"]]),
-    by = 1
-  ))
-  state <- Get.InitState(
-    population = Parm[["num_of_agent"]],
-    initial_seeds = Parm[["initial_seeds"]],
-    Base_Immu = Parm[["base_immune"]],
-    n_virus = length(Parm[["beta0"]])
+  SimData <- Model.RunSim.ode(Parm, Plot = FALSE, after = after)[["Data"]]
+  SimData[, Time := Time - (as.integer(strftime(Time, "%u")) - 1L)] # align to Monday
+  SimData <- SimData[,
+    lapply(.SD, sum, na.rm = TRUE),
+    by = .(Time, ISOweek),
+    .SDcols = setdiff(names(SimData), c("Time", "ISOweek"))
+  ][order(Time)]
+
+  SimData_long <- melt(
+    SimData,
+    id.vars = c("Time", "ISOweek"),
+    variable.name = "Virus",
+    value.name = "p_sim"
   )
-  SimResult <- ode(
-    y = state,
-    times = times,
-    func = ParmInferenceCpp,
-    parms = Parm,
-    method = "rk4"
+  SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
+  SimData_long[, p_sim := Utility.Clamp01(p_sim)]
+
+  # Calculate log-likelihood based on the specified method
+  Method <- match.arg(Method)
+  if (Method == "RatioAbs") {
+    SimData_long <- melt(
+      SimData,
+      id.vars = c("Time", "ISOweek"),
+      variable.name = "Virus",
+      value.name = "p_sim"
+    )
+    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
+    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
+
+    # Modify TargetDat to calculate p_obs
+    TargetDat[, p_obs := (y + 0.5) / (N + 1)] # add pseudo-count for stability
+    TargetDat[, p_obs := Utility.Clamp01(p_obs)]
+
+    # Merge Data
+    MergeData <- SimData_long[
+      TargetDat,
+      on = c("ISOweek", "Virus"),
+      nomatch = 0
+    ]
+    setorder(MergeData, ISOweek, Virus)
+
+    LLH <- LLH.RatioAbs(
+      MergeData,
+      viruses = paste0("Virus_", 1:4),
+      sigma_ratio = 0.7,
+      sigma_abs = 0.7
+    )
+  } else if (Method == "BetaBinomial") {
+    SimData_long <- melt(
+      SimData,
+      id.vars = c("Time", "ISOweek"),
+      variable.name = "Virus",
+      value.name = "p_sim"
+    )
+    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
+    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
+
+    # Merge Data
+    MergeData <- SimData_long[
+      TargetDat,
+      on = c("ISOweek", "Virus"),
+      nomatch = 0
+    ]
+    setorder(MergeData, ISOweek, Virus)
+    LLH <- LLH.BetaBinomial(
+      MergeData,
+      rho = 0.02
+    )
+  } else if (Method == "LogDiff") {
+    SimData_long <- melt(
+      SimData,
+      id.vars = c("Time", "ISOweek"),
+      variable.name = "Virus",
+      value.name = "p_sim"
+    )
+    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
+    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
+
+    # Modify TargetDat to calculate p_obs
+    TargetDat[, p_obs := (y + 0.5) / (N + 1)] # add pseudo-count for stability
+    TargetDat[, p_obs := Utility.Clamp01(p_obs)]
+
+    # Merge Data
+    MergeData <- SimData_long[
+      TargetDat,
+      on = c("ISOweek", "Virus"),
+      nomatch = 0
+    ]
+    setorder(MergeData, ISOweek, Virus)
+
+    LLH <- LLH.LogDiff(
+      MergeData,
+      transform = "logit",
+      sigma = 0.7
+    )
+  } else if (Method == "Dirichlet") {
+    SimData_long <- melt(
+      SimData,
+      id.vars = c("Time", "ISOweek"),
+      variable.name = "Virus",
+      value.name = "p_sim"
+    )
+    SimData_long[, p_sim := p_sim / Parm[["num_of_agent"]]]
+    SimData_long[, p_sim := Utility.Clamp01(p_sim)]
+
+    # Modify TargetDat to calculate p_obs
+    TargetDat[, p_obs := (y + 0.5) / (N + 1)] # add pseudo-count for stability
+    TargetDat[, p_obs := Utility.Clamp01(p_obs)]
+
+    # Merge Data
+    MergeData <- SimData_long[
+      TargetDat,
+      on = c("ISOweek", "Virus"),
+      nomatch = 0
+    ]
+    setorder(MergeData, ISOweek, Virus)
+
+    LLH <- LLH.Dirichlet(
+      Dat = MergeData,
+      kappa = 100,
+      c = 0.5
+    )
+  } else {
+    stop("Invalid Method")
+  }
+  return(LLH)
+}
+
+# MCMC --------------------------------------------
+MCMC.Proposal <- function(Parm, step1 = 1, step2 = 5) {
+  ParmReal_comp <- log(Parm[1:4])
+  ParmUpdate_comp <- ParmReal_comp + runif(4, -step1, step1)
+
+  ParmMean <- mean(ParmUpdate_comp)
+  ParmUpdate_comp <- ParmUpdate_comp - ParmMean
+  NewCompParm <- exp(ParmUpdate_comp)
+
+  NewParm <- c(NewCompParm)
+
+  return(NewParm)
+}
+
+MCMC.MH <- function(
+  Prior,
+  n_iterations,
+  ncores = 4,
+  step = 10,
+  TargetDat = TargetDat,
+  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet")
+) {
+  # mean = 0, sd = 0.5,
+  chain <- matrix(NA, nrow = n_iterations, ncol = 8)
+  chain[1, ] <- Prior
+
+  current_log_likelihood <- Model.RunSim.LLH(
+    Parm = Parameter.Create(
+      comp = c(chain[1, 1], chain[1, 2], chain[1, 3], chain[1, 4])
+    ),
+    ncores = ncores,
+    NPI = TRUE,
+    StartTime = 290,
+    TargetDat = TargetDat,
+    Method = Method
   )
+  pb <- progress_bar$new(
+    total = n_iterations,
+    clear = TRUE,
+    format = "  [:bar] :percent :etas"
+  )
+  pb$tick()
+  for (i in 2:n_iterations) {
+    proposal <- MCMC.Proposal(Parm = chain[i - 1, ], step = step) # mean = mean, sd = sd
+    proposal_log_likelihood <- Model.RunSim.LLH(
+      Parm = Parameter.Create(
+        comp = c(proposal[1], proposal[2], proposal[3], proposal[4]),
+      ),
+      ncores = ncores,
+      NPI = TRUE,
+      StartTime = 290,
+      TargetDat = TargetDat,
+      Method = Method
+    )
 
-  # Post process the simulation data
-  NewDat <- SimResult %>% as.data.table()
-  NewDat <- NewDat[, time := as.Date(time, origin = "1970-01-01")]
-  inc_cols <- grep("^Inc_\\d+$", names(NewDat), value = TRUE)
-  NewDat <- NewDat[
-    time >= after,
-    c("time", inc_cols),
-    with = FALSE
-  ]
+    Info <- sprintf(
+      "n_iteration is: %d Current LLH is: %f Proposal LLH is: %f",
+      i,
+      current_log_likelihood,
+      proposal_log_likelihood
+    )
+    CLI.Print(Info)
 
-  # # Find Max for each virus in 12 months, and calculate the proportion
-  # NewDat <- NewDat[,
-  #   lapply(.SD, sum, na.rm = TRUE),
-  #   .SDcols = !c("yearmonth", "time"),
-  #   by = c("yearmonth")
-  # ][,
-  #   paste0(c("IAV", "IBV", "RSV", "RV"), "_roll") := lapply(.SD, max),
-  #   # lapply(.SD, function(x) frollapply(x, n = 12, FUN = max, align = "center")),
-  #   .SDcols = c("IAV", "IBV", "RSV", "RV")
-  # ][,
-  #   ":="(
-  #     IAV_prop = IAV / IAV_roll,
-  #     IBV_prop = IBV / IBV_roll,
-  #     RSV_prop = RSV / RSV_roll,
-  #     RV_prop = RV / RV_roll
-  #   )
-  # ]
-  # NewDat <- NewDat[, .(yearmonth, IAV_prop, IBV_prop, RSV_prop, RV_prop)]
-
-  # # Calculate the adjusted observed cases based on the proportion
-  # MergeDat <- merge(NewDat, TargetDat, by = "yearmonth")
-
-  # MergeDat <- MergeDat[,
-  #   ":="(
-  #     IAV_est = IAV_prop * IAV_max, # IAV_roll,
-  #     IBV_est = IBV_prop * IBV_max, # IBV_roll,
-  #     RSV_est = RSV_prop * RSV_max, # RSV_roll,
-  #     RV_est = RV_prop * RV_max
-  #   ) # RV_roll
-  # ][,
-  #   ":="(
-  #     IAV_llh = dpois(IAV, IAV_est, log = TRUE),
-  #     IBV_llh = dpois(IBV, IBV_est, log = TRUE),
-  #     RSV_llh = dpois(RSV, RSV_est, log = TRUE),
-  #     RV_llh = dpois(RV, RV_est, log = TRUE)
-  #   )
-  # ]
-
-  # # Calsulate the log likelihood
-  # LLH <- sum(
-  #   MergeDat[, grep("_llh", names(MergeDat), value = TRUE), with = FALSE],
-  #   na.rm = TRUE
-  # )
-  # return(LLH)
+    acceptance_ratio <- min(
+      1,
+      exp(proposal_log_likelihood - current_log_likelihood)
+    )
+    if (runif(1) < acceptance_ratio) {
+      chain[i, ] <- proposal
+      current_log_likelihood <- proposal_log_likelihood
+    } else {
+      chain[i, ] <- chain[i - 1, ]
+    }
+    print(chain[i, ])
+    pb$tick()
+  }
+  return(chain)
 }
