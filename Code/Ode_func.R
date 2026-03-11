@@ -110,7 +110,11 @@ Model.RunSim.ode <- function(
     # Plotting results for each virus
     fig1 <- SimResult_Inc %>%
       as.data.frame() %>%
-      pivot_longer(cols = !Time, names_to = "virus", values_to = "cases") %>%
+      pivot_longer(
+        cols = !c(Time, ISOweek),
+        names_to = "virus",
+        values_to = "cases"
+      ) %>%
       ggplot(., aes(x = Time, y = cases)) +
       geom_line() +
       scale_x_date(date_labels = "%Y-%b", date_breaks = "3 months") +
@@ -171,7 +175,6 @@ LLH.BetaBinomial.PMF <- function(y, n, p, rho, epsilon = 1e-9) {
 LLH.BetaBinomial <- function(
   Dat,
   rho = 0.02,
-  viruses = NULL,
   epsilon = 1e-9
 ) {
   return(sum(
@@ -184,12 +187,12 @@ LLH.BetaBinomial <- function(
 #' Calculate the log-likelihood based on the "Ratio + Absolute Anchor" method.
 #' This method uses the log-ratio of predicted vs observed probabilities for each virus relative to a reference virus, as well as the absolute logit of the reference virus.
 #' @param Dat: a data.table containing columns 'Time', 'ISOweek', 'Virus', 'p_sim' (predicted probabilities), and 'p_obs' (observed probabilities)
-#' @param viruses: optional vector of virus names to include in the likelihood calculation (default is all viruses in the data)
+#' @param VirNames: optional vector of virus names to include in the likelihood calculation (default is all viruses in the data)
 #' @param sigma_ratio: standard deviation for the log-ratio component of the likelihood
 #' @param sigma_abs: standard deviation for the absolute anchor component of the likelihood
 LLH.RatioAbs <- function(
   Dat,
-  viruses = paste0("Virus_", 1:4),
+  VirNames = paste0("Virus_", 1:4),
   sigma_ratio = 0.7,
   sigma_abs = 0.7
 ) {
@@ -228,7 +231,7 @@ LLH.RatioAbs <- function(
   )
 
   # ratios for other viruses: z_{i,t} = log(p_i,t) - log(p_ref,t)
-  others <- setdiff(viruses, "Virus_1")
+  others <- setdiff(VirNames, "Virus_1")
   LLH_Ratios <- 0
   for (v in others) {
     pObs <- DatWide[[paste0("p_obs__", v)]]
@@ -301,8 +304,8 @@ LLH.Dirichlet <- function(Dat, kappa, c = 1e-6) {
     sep = "__"
   )
 
-  obs_cols <- paste0("p_obs__", viruses)
-  sim_cols <- paste0("p_sim__", viruses)
+  obs_cols <- paste0("p_obs__", VirNames)
+  sim_cols <- paste0("p_sim__", VirNames)
 
   keep <- obs_cols %in% names(DatWide) & sim_cols %in% names(DatWide)
   obs_cols <- obs_cols[keep]
@@ -346,6 +349,9 @@ Model.RunSim.LLH <- function(
   Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet"),
   LLHArg = list()
 ) {
+  Method <- match.arg(Method)
+  Tar <- copy(TargetDat)
+
   # Run simulation
   SimData <- Model.RunSim.ode(Parm, Plot = FALSE, after = after)[["Data"]]
   SimData[, Time := Time - (as.integer(strftime(Time, "%u")) - 1L)] # align to Monday
@@ -366,31 +372,31 @@ Model.RunSim.LLH <- function(
 
   if (Method %in% c("RatioAbs", "LogDiff", "Dirichlet")) {
     pseudo <- LLHArg$pseudo %||% 0.5
-    TargetDat[, p_obs := (y + pseudo) / (N + 2 * pseudo)]
-    TargetDat[, p_obs := Utility.Clamp01(p_obs)]
+    Tar[, p_obs := (y + pseudo) / (N + 2 * pseudo)]
+    Tar[, p_obs := Utility.Clamp01(p_obs)]
   }
 
   MergeData <- SimData_long[
-    TargetDat,
+    Tar,
     on = c("ISOweek", "Virus"),
     nomatch = 0
   ]
   setorder(MergeData, ISOweek, Virus)
 
   # Calculate log-likelihood based on the specified method
-  if (Method == "RatioAbs") {
+  if (Method == "BetaBinomial") {
+    rho <- LLHArg$rho %||% 0.02
+    LLH <- LLH.BetaBinomial(MergeData, rho = rho)
+  } else if (Method == "RatioAbs") {
     sigma_ratio <- LLHArg$sigma_ratio %||% 0.7
     sigma_abs <- LLHArg$sigma_abs %||% 0.7
 
     LLH <- LLH.RatioAbs(
       MergeData,
-      viruses = paste0("Virus_", 1:4),
+      VirNames = paste0("Virus_", 1:4),
       sigma_ratio = sigma_ratio,
       sigma_abs = sigma_abs
     )
-  } else if (Method == "BetaBinomial") {
-    rho <- LLHArg$rho %||% 0.02
-    LLH <- LLH.BetaBinomial(MergeData, rho = rho, p_col = "p_sim")
   } else if (Method == "LogDiff") {
     sigma <- LLHArg$sigma %||% 0.7
     transform <- LLHArg$transform %||% "logit"
@@ -407,7 +413,7 @@ Model.RunSim.LLH <- function(
     LLH <- LLH.Dirichlet(
       Dat = MergeData,
       kappa = kappa,
-      c = c_add,
+      c = c_add
     )
   } else {
     stop("Invalid Method")
@@ -426,21 +432,9 @@ MCMC.LogPrior.Comp <- function(comp, sdlog = 1) {
 }
 
 
-MCMC.Proposal <- function(Parm, step1 = 1, step2 = 5) {
-  ParmReal_comp <- log(Parm[1:4])
-  ParmUpdate_comp <- ParmReal_comp + runif(4, -step1, step1)
-
-  ParmMean <- mean(ParmUpdate_comp)
-  ParmUpdate_comp <- ParmUpdate_comp - ParmMean
-  NewCompParm <- exp(ParmUpdate_comp)
-
-  NewParm <- c(NewCompParm)
-
-  return(NewParm)
-}
-
-
-#'
+#' Generate a new proposal for the competition parameters by adding a random perturbation to the log-transformed parameters, and then normalizing to ensure identifiability.
+#' @param Parm: a vector of current parameter values (only the first 4 elements are used for the competition parameters)
+#' @param step1: the maximum absolute value of the random perturbation added to the log-transformed parameters (default is 1)
 MCMC.Proposal <- function(Parm, step1 = 0.1) {
   ParmReal <- log(Parm)
   ParmUpdate <- ParmReal + runif(length(Parm), -step1, step1)
@@ -453,6 +447,17 @@ MCMC.Proposal <- function(Parm, step1 = 0.1) {
 }
 
 
+#' Run MCMC sampling using the Metropolis-Hastings algorithm to estimate the competition parameters of the ODE model.
+#' @param Initial: a vector of initial values for the competition parameters
+#' @param n_iterations: the number of MCMC iterations to run
+#' @param step: the step size for the proposal distribution
+#' @param TargetDat: a data.table containing the observed data to compare against
+#' @param Method: the method to use for calculating the likelihood
+#' @param BaseParm: a list of base parameters for the ODE model, which will be updated with the proposed competition parameters in each iteration
+#' @param after: only include data after this date when calculating the likelihood
+#' @param LLHArg: a list of additional arguments to pass to the likelihood function
+#' @param LogPriorFun: a function that takes a vector of competition parameters and returns the log-prior probability of those parameters
+#' @return a matrix containing the MCMC samples of the competition parameters, with additional attributes for the log-likelihood, log-prior, log-posterior, acceptance indicators, and acceptance rate
 MCMC.MH <- function(
   Initial,
   n_iterations,
