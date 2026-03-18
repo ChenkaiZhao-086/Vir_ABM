@@ -1,4 +1,4 @@
-### Canada data prepare ####
+### Canada data prepare ###
 #################################
 # Canadian data was split into two segments: pre-COVID surveillance (through November 19, 2022)
 # and post-COVID surveillance (from November 20, 2022 onward), loaded separately.
@@ -120,8 +120,8 @@ NameMapCOVID <- c(
 # 使用 fcoalesce 实现：如果在映射表中找到就用新名，找不到(NA)就用原名
 COVIDDat[, Location := fcoalesce(NameMapCOVID[Location], Location)]
 
-### -----------------------------------------------------------------------
-## Merge all data
+### Merge all data -------------------------------------------------------------
+
 MergeDat <- merge(
   Dat,
   COVIDDat,
@@ -145,8 +145,8 @@ MergeDat[, Location := fcoalesce(NameMapAll[Location], Location)]
 fwrite(MergeDat, "Data/CanadaData.csv")
 
 
-### -----------------------------------------------------------------------
-## Filter high quality data
+### Filter high quality data --------------------------------------
+
 HQDat <- copy(MergeDat)
 HQDat <- HQDat[
   Location %in%
@@ -230,7 +230,7 @@ HQDat[,
 fwrite(HQDat, "Data/HQData.csv")
 # save(HQDat, file = "Data/HQDat.RData")
 
-### Convret
+### Convret to long format data ---------------------------------
 RealData <- copy(HQDat)
 ### Case number data ###
 RealData_c <- RealData[, !c("COVID", "COVID_IR")]
@@ -250,8 +250,74 @@ RealData_c_Long <- melt(
 RealData_c_Long[, Virus := as.numeric(Virus)][, Virus := virus_lab[Virus]]
 RealData_c_Long[, y := as.numeric(y)][, N := as.numeric(N)]
 
-save(HQDat, RealData_c_Long, file = "Data/HQDat.RData")
+# save(HQDat, RealData_c_Long, file = "Data/HQDat.RData")
 
+### Data for Dirichlet distribution -----------------------------------------
+
+HQDat_Dir <- copy(HQDat)
+
+HQDat_Dir[, min_tested := pmin(IV_Tested, RSV_Tested, RV_Tested, na.rm = TRUE)]
+
+HQDat_Dir[, `:=`(
+  IAV_adj = IAV * min_tested / IV_Tested,
+  IBV_adj = IBV * min_tested / IV_Tested,
+  RSV_adj = RSV * min_tested / RSV_Tested,
+  RV_adj = RV * min_tested / RV_Tested,
+
+  IV_Tested_adj = min_tested,
+  RSV_Tested_adj = min_tested,
+  RV_Tested_adj = min_tested
+)]
+
+# 3) 如果你想直接覆盖原列，用下面这段：
+HQDat_Dir[, `:=`(
+  IAV = IAV_adj,
+  IBV = IBV_adj,
+  RSV = RSV_adj,
+  RV = RV_adj,
+
+  IV_Tested = IV_Tested_adj,
+  RSV_Tested = RSV_Tested_adj,
+  RV_Tested = RV_Tested_adj
+)]
+
+HQDat_Dir[,
+  c(
+    "IAV_adj",
+    "IBV_adj",
+    "RSV_adj",
+    "RV_adj",
+    "IV_Tested_adj",
+    "RSV_Tested_adj",
+    "RV_Tested_adj",
+    "min_tested"
+  ) := NULL
+]
+
+
+### Convert to long format data (Dirichlet distribution) -------------------
+RealData_Dir <- copy(HQDat_Dir)
+### Case number data ###
+RealData_c_Dir <- RealData_Dir[, !c("COVID", "COVID_IR")]
+
+RealData_c_Long_Dir <- melt(
+  RealData_Dir,
+  id.vars = c("Location", "Monday", "ISOweek"),
+  measure.vars = list(y_cols, n_cols),
+  value.name = c("y", "N"),
+  variable.name = "Virus",
+  variable.factor = FALSE
+)
+RealData_c_Long_Dir[, Virus := as.numeric(Virus)][, Virus := virus_lab[Virus]]
+RealData_c_Long_Dir[, y := as.numeric(y)][, N := as.numeric(N)]
+
+save(
+  HQDat,
+  RealData_c_Long,
+  HQDat_Dir,
+  RealData_c_Long_Dir,
+  file = "Data/HQDat.RData"
+)
 ########## Visualization
 # a <- fread("Data/CanadaData.csv")
 # a <- a[, Date := as.Date(Date)]
