@@ -43,7 +43,7 @@ List ParmInferenceCpp(double time, const NumericVector &state,
   const double phi = as<double>(parms["phi"]);
   const double beta_amplify = as<double>(parms["beta_amplify"]);
   const double added_cases = as<double>(parms["added_cases"]);
-  const double Penal = as<double>(parms["Penal"]);
+  const double Penalty = as<double>(parms["Penalty"]);
 
   const NumericVector beta0 = parms["beta0"];
   const NumericVector gamma = parms["gamma"];
@@ -116,7 +116,7 @@ List ParmInferenceCpp(double time, const NumericVector &state,
     double I_other_prev = (sumI_j - Ii) / N;
     if (I_other_prev < 0.0)
       I_other_prev = 0.0;
-    const double coinf_factor = std::exp(-Penal * I_other_prev);
+    const double coinf_factor = std::exp(-Penalty * I_other_prev);
 
     // Incidence (cases per day)
     const double inc_i = lambda_i * S_eff * Ii * coinf_factor;

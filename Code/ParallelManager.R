@@ -26,18 +26,6 @@
 
 .mcmc_mgr_state <- function(mgr) attr(mgr, ".state_env", exact = TRUE)
 
-.assert_mcmc_mgr <- function(mgr, allow_closed = FALSE) {
-  st <- .mcmc_mgr_state(mgr)
-  if (
-    !inherits(mgr, "mcmc_future_manager") || is.null(st) || !is.environment(st)
-  ) {
-    stop("`mgr` is not a valid 'mcmc_future_manager' object.")
-  }
-  if (!allow_closed && isTRUE(st$closed)) {
-    stop("This manager is already shutdown. Create a new manager.")
-  }
-  invisible(st)
-}
 
 print.mcmc_future_manager <- function(x, ...) {
   st <- .mcmc_mgr_state(x)
@@ -45,13 +33,12 @@ print.mcmc_future_manager <- function(x, ...) {
     cat("<invalid mcmc_future_manager>\n")
     return(invisible(x))
   }
+
   cat("<mcmc_future_manager>\n")
   cat(" label      :", st$label, "\n")
   cat(" backend    :", st$backend, "\n")
   cat(" workers    :", st$workers, "\n")
   cat(" debug_mode :", st$debug_mode, "\n")
-  cat(" log_to_file:", st$log_to_file, "\n")
-  cat(" log_dir    :", st$log_dir, "\n")
   cat(" closed     :", st$closed, "\n")
   cat(" jobs       :", length(st$jobs), "\n")
   if (length(st$jobs) > 0) {
@@ -60,17 +47,12 @@ print.mcmc_future_manager <- function(x, ...) {
   invisible(x)
 }
 
+
 MCMC.Future.ManagerCreate <- function(
   workers = max(1L, future::availableCores() - 1L),
   backend = c("multisession", "multicore", "sequential"),
   debug_mode = FALSE,
   future_debug = debug_mode,
-  log_to_file = TRUE,
-  log_dir = file.path(
-    tempdir(),
-    paste0("mcmc_future_logs_", format(Sys.time(), "%Y%m%d_%H%M%S"))
-  ),
-  save_error_rds = TRUE,
   fallback_to_multisession = TRUE,
   label = "mcmc_manager"
 ) {
@@ -87,10 +69,10 @@ MCMC.Future.ManagerCreate <- function(
   if (identical(backend, "multicore") && !isTRUE(future::supportsMulticore())) {
     msg <- paste0(
       "backend='multicore' is not supported in this session/OS/IDE. ",
-      "Use multisession instead."
+      "Use 'multisession' instead."
     )
     if (isTRUE(fallback_to_multisession)) {
-      warning(msg, " Falling back to backend='multisession'.", call. = FALSE)
+      warning(msg, " Falling back to 'multisession'.", call. = FALSE)
       backend <- "multisession"
     } else {
       stop(msg, call. = FALSE)
@@ -101,19 +83,12 @@ MCMC.Future.ManagerCreate <- function(
     workers <- 1L
   }
 
-  if (isTRUE(log_to_file)) {
-    dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
-  }
-
   st <- new.env(parent = emptyenv())
   st$label <- label
   st$workers <- workers
   st$backend <- backend
   st$debug_mode <- isTRUE(debug_mode)
   st$future_debug <- isTRUE(future_debug)
-  st$log_to_file <- isTRUE(log_to_file)
-  st$log_dir <- normalizePath(log_dir, winslash = "/", mustWork = FALSE)
-  st$save_error_rds <- isTRUE(save_error_rds)
   st$created_at <- Sys.time()
   st$jobs <- list()
   st$closed <- FALSE
@@ -141,6 +116,27 @@ MCMC.Future.ManagerCreate <- function(
     return(id)
   }
 
+  safe_value <- function(f) {
+    tryCatch(
+      future::value(f),
+      error = function(e) {
+        list(
+          ok = FALSE,
+          value = NULL,
+          error = paste0("Future-level error: ", conditionMessage(e)),
+          error_class = paste(class(e), collapse = "/"),
+          call_stack = NA_character_,
+          warnings = character(0),
+          pid = NA_integer_,
+          elapsed_sec = NA_real_,
+          started_at = as.POSIXct(NA),
+          ended_at = as.POSIXct(NA),
+          seed = NA_integer_
+        )
+      }
+    )
+  }
+
   #' Get the status of each chain in a job as a data frame
   #' @param job A job object containing futures
   #' @param timeout Time in seconds to wait for each future to resolve when checking status
@@ -160,43 +156,16 @@ MCMC.Future.ManagerCreate <- function(
       err <- NA_character_
       err_cls <- NA_character_
       warn_n <- NA_integer_
-      log_file <- job$log_files[i] %||% NA_character_
-      error_rds <- NA_character_
 
       if (resolved) {
-        v <- tryCatch(
-          future::value(f),
-          error = function(e) {
-            list(
-              ok = FALSE,
-              value = NULL,
-              error = paste0("Future-level error: ", conditionMessage(e)),
-              error_class = paste(class(e), collapse = "/"),
-              pid = NA_integer_,
-              elapsed_sec = NA_real_,
-              warnings = character(0),
-              log_file = log_file,
-              error_rds = NA_character_
-            )
-          }
-        )
+        v <- safe_value(f)
         ok <- isTRUE(v$ok)
         state <- if (ok) "success" else "failed"
-        pid <- if (!is.null(v$pid)) as.integer(v$pid) else NA_integer_
-        elapsed_sec <- if (!is.null(v$elapsed_sec)) {
-          as.numeric(v$elapsed_sec)
-        } else {
-          NA_real_
-        }
-        err <- if (!is.null(v$error)) as.character(v$error) else NA_character_
-        err_cls <- if (!is.null(v$error_class)) {
-          as.character(v$error_class)
-        } else {
-          NA_character_
-        }
+        pid <- as.integer(v$pid %||% NA_integer_)
+        elapsed_sec <- as.numeric(v$elapsed_sec %||% NA_real_)
+        err <- as.character(v$error %||% NA_character_)
+        err_cls <- as.character(v$error_class %||% NA_character_)
         warn_n <- length(v$warnings %||% character(0))
-        log_file <- v$log_file %||% log_file
-        error_rds <- v$error_rds %||% NA_character_
       }
 
       data.frame(
@@ -209,8 +178,6 @@ MCMC.Future.ManagerCreate <- function(
         warnings_n = warn_n,
         error_class = err_cls,
         error = err,
-        log_file = log_file,
-        error_rds = error_rds,
         stringsAsFactors = FALSE
       )
     })
@@ -263,7 +230,9 @@ MCMC.Future.ManagerCreate <- function(
       job_id <- MakeJobID()
     } else {
       job_id <- as.character(job_id)
-      if (!is.null(st$jobs[[job_id]])) stop("`job_id` already exists: ", job_id)
+      if (!is.null(st$jobs[[job_id]])) {
+        stop("`job_id` already exists: ", job_id)
+      }
     }
 
     n_virus <- length(BaseParm[["beta0"]])
@@ -292,74 +261,25 @@ MCMC.Future.ManagerCreate <- function(
     }
     stopifnot(length(InitialList) == n_chain)
 
-    job_id_local <- job_id
     backend_local <- st$backend
-    debug_mode_local <- st$debug_mode
-    save_error_rds_local <- st$save_error_rds
-
-    job_log_dir <- NA_character_
-    chain_logs <- rep(NA_character_, n_chain)
-    if (isTRUE(st$log_to_file)) {
-      job_log_dir <- file.path(st$log_dir, job_id_local)
-      dir.create(job_log_dir, recursive = TRUE, showWarnings = FALSE)
-      chain_logs <- file.path(
-        job_log_dir,
-        paste0("chain_", seq_len(n_chain), ".log")
-      )
-      for (lf in chain_logs) {
-        if (!is.na(lf) && file.exists(lf)) file.remove(lf)
-      }
-    }
 
     fs <- lapply(seq_len(n_chain), function(k) {
       chain_seed <- as.integer(seed + k)
-      chain_name <- paste0("chain_", k)
-      chain_log_file <- chain_logs[k]
 
       future::future(
         {
           pid <- Sys.getpid()
           t0 <- Sys.time()
-
-          logf <- function(...) {
-            msg <- paste0(...)
-            line <- sprintf(
-              "[%s][%s][pid=%s] %s",
-              format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-              chain_name,
-              pid,
-              msg
-            )
-            if (!is.na(chain_log_file)) {
-              cat(line, "\n", file = chain_log_file, append = TRUE)
-            }
-            if (
-              isTRUE(debug_mode_local) && identical(backend_local, "sequential")
-            ) {
-              cat(line, "\n")
-            }
-          }
-
           warnings_buf <- character(0)
 
-          logf("START; seed=", chain_seed, "; backend=", backend_local)
-
           if (is.finite(worker_sleep) && worker_sleep > 0) {
-            logf("sleep ", worker_sleep, " sec before run")
             Sys.sleep(worker_sleep)
           }
 
-          if (isTRUE(browser_at_start)) {
-            if (identical(backend_local, "sequential")) {
-              logf("browser() entering (sequential debug)")
-              browser()
-            } else {
-              logf(
-                "browser_at_start=TRUE, but backend=",
-                backend_local,
-                " (not sequential), browser() skipped."
-              )
-            }
+          if (
+            isTRUE(browser_at_start) && identical(backend_local, "sequential")
+          ) {
+            browser()
           }
 
           set.seed(chain_seed)
@@ -368,7 +288,6 @@ MCMC.Future.ManagerCreate <- function(
             withCallingHandlers(
               {
                 if (!is.null(source_r)) {
-                  logf("source_r: ", source_r)
                   source(source_r, local = TRUE)
                 }
 
@@ -380,10 +299,9 @@ MCMC.Future.ManagerCreate <- function(
                   }
                   cache_dir <- file.path(
                     tempdir(),
-                    sprintf("rcpp_cache_%s_pid%s_chain%s", job_id_local, pid, k)
+                    sprintf("rcpp_cache_%s_pid%s_chain%s", job_id, pid, k)
                   )
                   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
-                  logf("source_cpp: ", source_cpp, " | cacheDir=", cache_dir)
                   Rcpp::sourceCpp(
                     source_cpp,
                     cacheDir = cache_dir,
@@ -391,7 +309,6 @@ MCMC.Future.ManagerCreate <- function(
                   )
                 }
 
-                logf("MCMC.MH.Adaptive() start")
                 ans <- MCMC.MH.Adaptive(
                   Initial = InitialList[[k]],
                   n_iterations = n_iterations,
@@ -406,7 +323,6 @@ MCMC.Future.ManagerCreate <- function(
                   Adapt = Adapt,
                   verbose = FALSE
                 )
-                logf("MCMC.MH.Adaptive() done")
 
                 list(
                   ok = TRUE,
@@ -418,23 +334,16 @@ MCMC.Future.ManagerCreate <- function(
               },
               warning = function(w) {
                 warnings_buf <<- c(warnings_buf, conditionMessage(w))
-                logf("WARNING: ", conditionMessage(w))
                 invokeRestart("muffleWarning")
               }
             ),
             error = function(e) {
-              cs <- .format_calls()
-              logf("ERROR: ", conditionMessage(e))
-              if (nzchar(cs)) {
-                logf("CALL_STACK:\n", cs)
-              }
-
               list(
                 ok = FALSE,
                 value = NULL,
                 error = conditionMessage(e),
                 error_class = paste(class(e), collapse = "/"),
-                call_stack = cs
+                call_stack = .format_calls()
               )
             }
           )
@@ -442,30 +351,10 @@ MCMC.Future.ManagerCreate <- function(
           t1 <- Sys.time()
           out$warnings <- warnings_buf
           out$pid <- pid
+          out$seed <- chain_seed
           out$started_at <- t0
           out$ended_at <- t1
           out$elapsed_sec <- as.numeric(difftime(t1, t0, units = "secs"))
-          out$log_file <- chain_log_file
-          out$seed <- chain_seed
-          out$error_rds <- NA_character_
-
-          if (
-            !isTRUE(out$ok) &&
-              isTRUE(save_error_rds_local) &&
-              !is.na(chain_log_file)
-          ) {
-            dbg_file <- sub("\\.log$", ".error.rds", chain_log_file)
-            try(saveRDS(out, dbg_file), silent = TRUE)
-            out$error_rds <- dbg_file
-          }
-
-          logf(
-            "END; ok=",
-            out$ok,
-            "; elapsed=",
-            round(out$elapsed_sec, 3),
-            " sec"
-          )
           out
         },
         seed = chain_seed
@@ -483,8 +372,6 @@ MCMC.Future.ManagerCreate <- function(
       backend = st$backend,
       debug_mode = st$debug_mode,
       futures = fs,
-      log_dir = job_log_dir,
-      log_files = chain_logs,
       collected = FALSE,
       collected_at = as.POSIXct(NA)
     )
@@ -495,6 +382,7 @@ MCMC.Future.ManagerCreate <- function(
   #' Get the status of one or more jobs as a data frame
   Status <- function(job_id = NULL, timeout = 0) {
     ids <- if (is.null(job_id)) names(st$jobs) else as.character(job_id)
+
     if (length(ids) == 0) {
       return(data.frame(
         job_id = character(0),
@@ -527,7 +415,7 @@ MCMC.Future.ManagerCreate <- function(
         ))
       }
 
-      cdf <- ChainStatusDataFrame(job, timeout = timeout)
+      cdf <- chain_status_df(job, timeout = timeout)
       n_chain <- nrow(cdf)
       n_resolved <- sum(cdf$resolved)
       n_success <- sum(cdf$state == "success")
@@ -565,7 +453,7 @@ MCMC.Future.ManagerCreate <- function(
     if (is.null(job)) {
       stop("Job not found: ", job_id)
     }
-    return(ChainStatusDataFrame(job, timeout = timeout))
+    ChainStatus(job, timeout = timeout)
   }
 
   #' Check if all chains in a job are ready (resolved)
@@ -591,26 +479,7 @@ MCMC.Future.ManagerCreate <- function(
       stop("Job not found: ", job_id)
     }
 
-    vals <- lapply(job$futures, function(f) {
-      tryCatch(
-        future::value(f),
-        error = function(e) {
-          list(
-            ok = FALSE,
-            value = NULL,
-            error = paste0("Future-level error: ", conditionMessage(e)),
-            error_class = paste(class(e), collapse = "/"),
-            call_stack = NA_character_,
-            warnings = character(0),
-            pid = NA_integer_,
-            elapsed_sec = NA_real_,
-            log_file = NA_character_,
-            error_rds = NA_character_
-          )
-        }
-      )
-    })
-
+    vals <- lapply(job$futures, safe_value)
     chain_names <- names(job$futures) %||%
       paste0("chain_", seq_along(job$futures))
 
@@ -653,16 +522,6 @@ MCMC.Future.ManagerCreate <- function(
         function(x) as.character(x$error %||% NA_character_),
         character(1)
       ),
-      log_file = vapply(
-        vals,
-        function(x) as.character(x$log_file %||% NA_character_),
-        character(1)
-      ),
-      error_rds = vapply(
-        vals,
-        function(x) as.character(x$error_rds %||% NA_character_),
-        character(1)
-      ),
       call_stack = vapply(
         vals,
         function(x) as.character(x$call_stack %||% NA_character_),
@@ -676,18 +535,7 @@ MCMC.Future.ManagerCreate <- function(
 
     if (stop_on_error && any(!report$ok)) {
       bad <- report[!report$ok, , drop = FALSE]
-      lines <- paste0(
-        " - ",
-        bad$chain,
-        ": ",
-        bad$error,
-        ifelse(is.na(bad$log_file), "", paste0(" [log: ", bad$log_file, "]")),
-        ifelse(
-          is.na(bad$error_rds),
-          "",
-          paste0(" [error_rds: ", bad$error_rds, "]")
-        )
-      )
+      lines <- paste0(" - ", bad$chain, ": ", bad$error)
       stop(
         paste0(
           "Some chains failed in ",
@@ -705,7 +553,6 @@ MCMC.Future.ManagerCreate <- function(
     attr(chains, "job_id") <- job_id
     attr(chains, "submitted_at") <- job$submitted_at
     attr(chains, "collected_at") <- Sys.time()
-    attr(chains, "log_dir") <- job$log_dir
 
     if (isTRUE(remove)) {
       st$jobs[[job_id]] <- NULL
@@ -799,71 +646,6 @@ MCMC.Future.ManagerCreate <- function(
 
   jobs <- function() names(st$jobs)
 
-  log_files <- function(job_id = NULL) {
-    ids <- if (is.null(job_id)) names(st$jobs) else as.character(job_id)
-    rows <- list()
-
-    for (id in ids) {
-      job <- st$jobs[[id]]
-      if (is.null(job)) {
-        next
-      }
-      nm <- names(job$futures) %||% paste0("chain_", seq_along(job$futures))
-      for (i in seq_along(nm)) {
-        lf <- job$log_files[i] %||% NA_character_
-        rows[[length(rows) + 1L]] <- data.frame(
-          job_id = id,
-          chain = nm[i],
-          log_file = lf,
-          exists = (!is.na(lf) && file.exists(lf)),
-          stringsAsFactors = FALSE
-        )
-      }
-    }
-
-    if (length(rows) == 0) {
-      return(data.frame(
-        job_id = character(0),
-        chain = character(0),
-        log_file = character(0),
-        exists = logical(0),
-        stringsAsFactors = FALSE
-      ))
-    }
-
-    out <- do.call(rbind, rows)
-    rownames(out) <- NULL
-    out
-  }
-
-  show_log <- function(job_id, chain = NULL, n = 80) {
-    job_id <- as.character(job_id)
-    job <- st$jobs[[job_id]]
-    if (is.null(job)) {
-      stop("Job not found: ", job_id)
-    }
-
-    nm <- names(job$futures) %||% paste0("chain_", seq_along(job$futures))
-    idx <- seq_along(nm)
-
-    if (!is.null(chain)) {
-      if (is.numeric(chain)) {
-        idx <- as.integer(chain)
-      } else {
-        idx <- match(as.character(chain), nm)
-      }
-      idx <- idx[!is.na(idx) & idx >= 1 & idx <= length(nm)]
-      if (length(idx) == 0) stop("No valid chain selected.")
-    }
-
-    out <- lapply(idx, function(i) {
-      lf <- job$log_files[i] %||% NA_character_
-      .tail_lines(lf, n = n)
-    })
-    names(out) <- nm[idx]
-    out
-  }
-
   config <- function() {
     list(
       label = st$label,
@@ -871,9 +653,6 @@ MCMC.Future.ManagerCreate <- function(
       workers = st$workers,
       debug_mode = st$debug_mode,
       future_debug = st$future_debug,
-      log_to_file = st$log_to_file,
-      log_dir = st$log_dir,
-      save_error_rds = st$save_error_rds,
       created_at = st$created_at,
       closed = st$closed
     )
@@ -899,7 +678,6 @@ MCMC.Future.ManagerCreate <- function(
         },
         logical(1)
       )
-
       running_ids <- ids[unresolved]
 
       if (length(running_ids) > 0 && !cancel_running) {
@@ -922,8 +700,13 @@ MCMC.Future.ManagerCreate <- function(
     if (isTRUE(restore_plan) && !is.null(st$old_plan)) {
       future::plan(st$old_plan)
     }
+
     if (isTRUE(restore_options)) {
-      options(future.debug = st$old_future_debug)
+      if (is.null(st$old_future_debug)) {
+        options(future.debug = NULL)
+      } else {
+        options(future.debug = st$old_future_debug)
+      }
     }
 
     st$closed <- TRUE
@@ -939,8 +722,6 @@ MCMC.Future.ManagerCreate <- function(
     cancel = cancel,
     remove = remove,
     jobs = jobs,
-    log_files = log_files,
-    show_log = show_log,
     config = config,
     shutdown = shutdown
   )
