@@ -4,6 +4,16 @@
 .gitignore
 *.csv
 *.docx
+*.ai
+*.pdf
+*.xlsx
+*.RData
+*.jpg
+*.zip
+Code/Archive*/
+Code/Discard/
+Manuscript/
+
 
 # History files
 .Rhistory
