@@ -10,6 +10,7 @@ library(progress)
 library(extraDistr)
 library(truncnorm)
 library(coda)
+library(bayesplot)
 library(future)
 library(future.apply)
 
@@ -79,9 +80,9 @@ Model.RunSim.ode(
     # R0 = c(1.41, 1.07, 1.7, 1.88),
 
     # Virus competition
-    comp = c(1.9, 0.4, -0.9, -1.4),
+    comp = c(0.8, 0.3, -0.97, -0.13),
     #c(6.7, 3.4, -0.3, -9.8),
-    #
+    #c(1.68, 0.45, -1.19, 0.94),
     # c(56, 28, 23, 0), # c(2.6, 0.8, 0.8, 0.5),
     # c(21,16,4,0), # c(3.05, 2.82, 1.49, -2.74), # c(1, 1, 1, 1),
 
@@ -223,7 +224,8 @@ Prep <- Inference.Setup(
   after = as.Date("2015-08-31")
 )
 chain1 <- MCMC.MH.Adaptive(
-  n_iterations = 5000,
+  Initial = c(1, -1, -2, 2),
+  n_iterations = 5,
   step = 0.15,
   # Prep = Prep,
   TargetDat = RealData_c_Long_Dir[Location == "CANADA"],
@@ -338,64 +340,75 @@ a1 <- c(1, 2, 3, 1, 4, 2, 1, 3)
 a2 <- c(2, 5, 6, 5, 1, 2, 3, 5)
 
 
-##################--------------------
-PlotData <- copy(RealData_c_Dir)
-PlotData <- PlotData[Location == "CANADA"]
-PlotData[,
-  `:=`(
-    Virus_1 = fifelse(IV_Tested > 0, IAV / IV_Tested * 100, NA_real_),
-    Virus_2 = fifelse(IV_Tested > 0, IBV / IV_Tested * 100, NA_real_),
-    Virus_3 = fifelse(RSV_Tested > 0, RSV / RSV_Tested * 100, NA_real_),
-    Virus_4 = fifelse(RV_Tested > 0, RV / RV_Tested * 100, NA_real_)
-  )
-]
-PlotData[,
-  c("IV_Tested", "IAV", "IBV", "RSV_Tested", "RSV", "RV_Tested", "RV") := NULL
-]
-PlotData <- melt(
-  PlotData,
-  id.vars = c("Location", "ISOweek", "Monday"),
-  measure.vars = patterns("Virus_"),
-  variable.name = "Virus",
-  value.name = "PosRate"
-)
-PlotData[, Group := "Observed"]
+#########
+SimDat <- copy(SimData$Data)
+# SimDat <- SimDat[time >= as.Date("2016-09-01")]
 
-
-SimPlotData <- copy(SimData$Data)
-SimPlotData <- SimPlotData[,
-  .(
-    Virus_1 = sum(Virus_1, na.rm = TRUE),
-    Virus_2 = sum(Virus_2, na.rm = TRUE),
-    Virus_3 = sum(Virus_3, na.rm = TRUE),
-    Virus_4 = sum(Virus_4, na.rm = TRUE)
+# Find Max for each virus in 12 months, and calculate the proportion
+SimDat[, Monday := Time - (as.integer(strftime(Time, "%u")) - 1L)]
+SimDat <- SimDat[,
+  lapply(.SD, sum, na.rm = TRUE),
+  .SDcols = !c("Time", "ISOweek", "Monday"),
+  by = c("Monday", "ISOweek")
+]
+SimDat[,
+  paste0(c("Virus_1", "Virus_2", "Virus_3", "Virus_4"), "_roll") := lapply(
+    .SD,
+    function(x) frollmax(x, n = 52, align = "center", na.rm = TRUE)
   ),
-  by = ISOweek
+  .SDcols = c("Virus_1", "Virus_2", "Virus_3", "Virus_4")
 ]
-SimPlotData[,
-  `:=`(
-    Virus_1 = Virus_1 / 10000 * 100,
-    Virus_2 = Virus_2 / 10000 * 100,
-    Virus_3 = Virus_3 / 10000 * 100,
-    Virus_4 = Virus_4 / 10000 * 100
+
+
+SimDat[,
+  ":="(
+    Virus_1 = Virus_1 / Virus_1_roll,
+    Virus_2 = Virus_2 / Virus_2_roll,
+    Virus_3 = Virus_3 / Virus_3_roll,
+    Virus_4 = Virus_4 / Virus_4_roll
   )
 ]
-SimPlotData <- melt(
-  SimPlotData,
-  id.vars = "ISOweek",
+SimDat[,
+  c(
+    "Virus_1_roll",
+    "Virus_2_roll",
+    "Virus_3_roll",
+    "Virus_4_roll"
+  ) := NULL
+]
+SimDat <- melt(
+  SimDat,
+  id.vars = c("Monday", "ISOweek"),
   measure.vars = patterns("Virus_"),
   variable.name = "Virus",
-  value.name = "PosRate"
+  value.name = "Prop"
 )
-SimPlotData[, Group := "Simulated"]
-MergeData <- rbind(PlotData, SimPlotData, fill = TRUE)
 
-ggplot(MergeData, aes(x = ISOweek, y = PosRate, color = Group, group = Group)) +
-  geom_line(linewidth = 0.9, na.rm = TRUE) +
-  facet_wrap(~Virus, ncol = 1, scales = "free_y") +
-  labs(
-    x = "Time",
-    y = "Positive Rate",
-    color = ""
-  ) +
-  theme_minimal(base_size = 13)
+# Calculate the adjusted observed cases based on the proportion
+ObsDat <- copy(RealData_c_Long_Dir[Location == "CANADA"])
+setorder(ObsDat, Virus, Monday)
+ObsDat[,
+  y_max_52 := frollmax(y, n = 52, align = "center", na.rm = TRUE),
+  by = Virus
+]
+
+MergeDat <- merge(
+  SimDat,
+  ObsDat,
+  by = c("ISOweek", "Monday", "Virus"),
+  all.x = TRUE
+)
+MergeDat[, Virus_est := Prop * y_max_52][,
+  llh := dpois(round(y), Virus_est, log = TRUE)
+]
+# Calsulate the log likelihood
+LLH <- sum(MergeDat$llh, na.rm = TRUE)
+
+MCMC.DecodeChain(resA[[1]], include_eta = FALSE)
+a <- MCMC.PostProcess(
+  resA,
+  burn_in = 5000,
+  thin = 10,
+  ModelParm = list(penalty = 0, NPI = FALSE),
+  ObsDat = RealData_c_Dir[Location == "CANADA"],
+)
