@@ -48,6 +48,37 @@ print.mcmc_future_manager <- function(x, ...) {
 }
 
 
+MCMC.MakeInitialList <- function(
+  n_chain,
+  Initial = NULL,
+  Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet"),
+  n_virus = 4L,
+  jitter = 0.3,
+  seed = NULL
+) {
+  Method <- match.arg(Method)
+
+  if (!is.null(seed)) {
+    set.seed(seed)
+  }
+
+  spec <- Inference.ParamSpec(Method = Method, n_virus = n_virus)
+  theta0 <- MCMC.MakeInitial(
+    Initial = Initial,
+    Method = Method,
+    n_virus = n_virus
+  )
+
+  if (length(jitter) == 1L) {
+    jitter <- rep(jitter, spec$n_par)
+  }
+
+  lapply(seq_len(n_chain), function(i) {
+    theta0 + rnorm(spec$n_par, mean = 0, sd = jitter)
+  })
+}
+
+
 MCMC.Future.ManagerCreate <- function(
   workers = max(1L, future::availableCores() - 1L),
   backend = c("multisession", "multicore", "sequential"),
@@ -209,8 +240,8 @@ MCMC.Future.ManagerCreate <- function(
     source_r = NULL,
     source_cpp = NULL,
     job_id = NULL,
-    browser_at_start = FALSE,
-    worker_sleep = 0
+    browser_at_start = FALSE # ,
+    # worker_sleep = 0
   ) {
     if (isTRUE(st$closed)) {
       stop("Manager is shutdown. Create a new manager.")
@@ -218,7 +249,7 @@ MCMC.Future.ManagerCreate <- function(
 
     Method <- match.arg(Method)
     n_chain <- as.integer(n_chain)
-    worker_sleep <- as.numeric(worker_sleep)
+    # worker_sleep <- as.numeric(worker_sleep)
 
     if (is.null(seed)) {
       seed <- 42L
@@ -272,9 +303,9 @@ MCMC.Future.ManagerCreate <- function(
           t0 <- Sys.time()
           warnings_buf <- character(0)
 
-          if (is.finite(worker_sleep) && worker_sleep > 0) {
-            Sys.sleep(worker_sleep)
-          }
+          # if (is.finite(worker_sleep) && worker_sleep > 0) {
+          #   Sys.sleep(worker_sleep)
+          # }
 
           if (
             isTRUE(browser_at_start) && identical(backend_local, "sequential")
@@ -283,73 +314,42 @@ MCMC.Future.ManagerCreate <- function(
           }
 
           set.seed(chain_seed)
-
-          out <- tryCatch(
-            withCallingHandlers(
-              {
-                if (!is.null(source_r)) {
-                  source(source_r, local = TRUE)
-                }
-
-                if (!is.null(source_cpp)) {
-                  if (!requireNamespace("Rcpp", quietly = TRUE)) {
-                    stop(
-                      "`source_cpp` is set but package 'Rcpp' is not installed."
-                    )
-                  }
-                  cache_dir <- file.path(
-                    tempdir(),
-                    sprintf("rcpp_cache_%s_pid%s_chain%s", job_id, pid, k)
-                  )
-                  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
-                  Rcpp::sourceCpp(
-                    source_cpp,
-                    cacheDir = cache_dir,
-                    rebuild = FALSE
-                  )
-                }
-
-                ans <- MCMC.MH.Adaptive(
-                  Initial = InitialList[[k]],
-                  n_iterations = n_iterations,
-                  step = step,
-                  Prep = Prep,
-                  Method = Method,
-                  BaseParm = BaseParm,
-                  after = after,
-                  LLHArg = LLHArg,
-                  PriorArg = PriorArg,
-                  InferArg = InferArg,
-                  Adapt = Adapt,
-                  verbose = FALSE
-                )
-
-                list(
-                  ok = TRUE,
-                  value = ans,
-                  error = NULL,
-                  error_class = NA_character_,
-                  call_stack = NA_character_
-                )
-              },
-              warning = function(w) {
-                warnings_buf <<- c(warnings_buf, conditionMessage(w))
-                invokeRestart("muffleWarning")
-              }
-            ),
-            error = function(e) {
-              list(
-                ok = FALSE,
-                value = NULL,
-                error = conditionMessage(e),
-                error_class = paste(class(e), collapse = "/"),
-                call_stack = .format_calls()
-              )
-            }
+          source(source_r, local = TRUE)
+          if (!is.null(source_cpp)) {
+            cache_dir <- file.path(
+              tempdir(),
+              sprintf("rcpp_cache_%s_pid%s_chain%s", job_id, pid, k)
+            )
+            dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+            Rcpp::sourceCpp(
+              source_cpp,
+              cacheDir = cache_dir,
+              rebuild = FALSE
+            )
+          }
+          ans <- MCMC.MH.Adaptive(
+            Initial = InitialList[[k]],
+            n_iterations = n_iterations,
+            step = step,
+            Prep = Prep,
+            Method = Method,
+            BaseParm = BaseParm,
+            after = after,
+            LLHArg = LLHArg,
+            PriorArg = PriorArg,
+            InferArg = InferArg,
+            Adapt = Adapt,
+            verbose = FALSE
+          )
+          out <- list(
+            ok = TRUE,
+            value = ans,
+            error = NULL,
+            error_class = NA_character_,
+            call_stack = NA_character_
           )
 
           t1 <- Sys.time()
-          out$warnings <- warnings_buf
           out$pid <- pid
           out$seed <- chain_seed
           out$started_at <- t0
@@ -415,7 +415,7 @@ MCMC.Future.ManagerCreate <- function(
         ))
       }
 
-      cdf <- chain_status_df(job, timeout = timeout)
+      cdf <- ChainStatusDataFrame(job, timeout = timeout)
       n_chain <- nrow(cdf)
       n_resolved <- sum(cdf$resolved)
       n_success <- sum(cdf$state == "success")
@@ -453,7 +453,7 @@ MCMC.Future.ManagerCreate <- function(
     if (is.null(job)) {
       stop("Job not found: ", job_id)
     }
-    ChainStatus(job, timeout = timeout)
+    ChainStatusDataFrame(job, timeout = timeout)
   }
 
   #' Check if all chains in a job are ready (resolved)

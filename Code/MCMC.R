@@ -285,7 +285,12 @@ LLH.BetaBinomial <- function(
   N_mat,
   p_sim_mat,
   rho = 0.02,
-  epsilon = 1e-9
+  epsilon = 1e-9,
+  add_roll_poisson = TRUE,
+  roll_n = 52L,
+  roll_align = "center",
+  poisson_weight = 1,
+  lambda_floor = 0
 ) {
   valid <- is.finite(y_mat) &
     is.finite(N_mat) &
@@ -298,9 +303,9 @@ LLH.BetaBinomial <- function(
     return(-Inf)
   }
 
-  sum(
+  llh_bb <- sum(
     LLH.BetaBinomial.PMF(
-      y = y_mat[valid],
+      y = round(y_mat[valid]),
       n = N_mat[valid],
       p = p_sim_mat[valid],
       rho = rho,
@@ -308,6 +313,24 @@ LLH.BetaBinomial <- function(
     ),
     na.rm = TRUE
   )
+
+  if (
+    !isTRUE(add_roll_poisson) ||
+      !is.finite(poisson_weight) ||
+      poisson_weight == 0
+  ) {
+    return(llh_bb)
+  }
+
+  llh_roll <- LLH.RollingMaxPoisson(
+    y_mat = y_mat,
+    sim_mat = p_sim_mat * 100000,
+    roll_n = roll_n,
+    roll_align = roll_align,
+    lambda_floor = lambda_floor
+  )
+
+  llh_bb + poisson_weight * llh_roll
 }
 
 
@@ -487,6 +510,33 @@ LLH.Dirichlet.PMF <- function(X, Alpha) {
 }
 
 
+LLH.DirMult.PMF <- function(Y, Alpha) {
+  Y <- as.matrix(Y)
+  Alpha <- as.matrix(Alpha)
+
+  if (!all(dim(Y) == dim(Alpha))) {
+    stop("Y and Alpha must have the same dimensions.")
+  }
+  if (any(!is.finite(Y)) || any(!is.finite(Alpha))) {
+    stop("Y and Alpha must be finite.")
+  }
+  if (any(Y < 0)) {
+    stop("Y must be non-negative.")
+  }
+  if (any(Alpha <= 0)) {
+    stop("Alpha must be strictly positive.")
+  }
+
+  n <- rowSums(Y)
+  alpha0 <- rowSums(Alpha)
+
+  lgamma(n + 1) -
+    rowSums(lgamma(Y + 1)) +
+    lgamma(alpha0) -
+    lgamma(n + alpha0) +
+    rowSums(lgamma(Y + Alpha) - lgamma(Alpha))
+}
+
 #' Calculate the log-likelihood for the Dirichlet method.
 #' This method first converts the observed counts into proportions, then uses the simulated proportions to construct the concentration parameters of the Dirichlet distribution, and finally calculates the log-likelihood using the Dirichlet PMF.
 #' @param y_mat matrix of observed counts
@@ -579,6 +629,87 @@ LLH.Dirichlet <- function(
 }
 
 
+LLH.CondDirMult <- function(
+  y_mat,
+  sim_mat,
+  kappa,
+  N_vec = NULL,
+  c = 1e-8,
+  weight = NULL,
+  add_roll_poisson = TRUE,
+  roll_n = 52L,
+  roll_align = "center",
+  poisson_weight = 1,
+  lambda_floor = 0
+) {
+  Obs <- as.matrix(y_mat)
+  Sim <- as.matrix(sim_mat)
+
+  if (length(kappa) != 1L || !is.finite(kappa) || kappa <= 0) {
+    return(-Inf)
+  }
+
+  keep <- apply(is.finite(Obs), 1, all) &
+    apply(is.finite(Sim), 1, all) &
+    apply(Obs >= 0, 1, all)
+
+  if (!any(keep)) {
+    return(-Inf)
+  }
+
+  Obs_keep <- Obs[keep, , drop = FALSE]
+
+  if (any(abs(Obs_keep - round(Obs_keep)) > 1e-8)) {
+    stop(
+      "Conditional Dirichlet-multinomial requires y_mat to be counts (integers), not proportions."
+    )
+  }
+
+  Y <- round(Obs_keep)
+  M <- pmax(Sim[keep, , drop = FALSE], 0)
+
+  # Optional sanity check only
+  if (!is.null(N_vec)) {
+    N_use <- N_vec[keep]
+    okN <- is.finite(N_use)
+    if (any(okN & (rowSums(Y) > N_use))) {
+      warning(
+        "Some row sums of y_mat exceed N_vec. ",
+        "Conditional Dirichlet-multinomial assumes mutually exclusive categories; ",
+        "please check for coinfections or duplicated counting."
+      )
+    }
+  }
+
+  # Mean composition implied by the simulator
+  P_sim <- M + c
+  P_sim <- sweep(P_sim, 1, rowSums(P_sim), "/")
+
+  # Total concentration = kappa
+  Alpha <- kappa * P_sim
+  Alpha <- pmax(Alpha, 1e-12)
+
+  llh_dm <- sum(LLH.DirMult.PMF(Y, Alpha))
+
+  if (
+    !isTRUE(add_roll_poisson) ||
+      !is.finite(poisson_weight) ||
+      poisson_weight == 0
+  ) {
+    return(llh_dm)
+  }
+
+  llh_roll <- LLH.RollingMaxPoisson(
+    y_mat = y_mat,
+    sim_mat = sim_mat,
+    roll_n = roll_n,
+    roll_align = roll_align,
+    lambda_floor = lambda_floor
+  )
+
+  llh_dm + poisson_weight * llh_roll
+}
+
 # Main log-likelihood wrapper -----------------------------------------------
 
 #' Run the ODE and compute the log-likelihood under the chosen method.
@@ -647,7 +778,12 @@ Model.RunSim.LLH <- function(
       N_mat = target$N,
       p_sim_mat = p_sim_mat,
       rho = LLHArg$rho %||% 0.02,
-      epsilon = epsilon
+      epsilon = epsilon,
+      add_roll_poisson = LLHArg$add_roll_poisson %||% TRUE,
+      roll_n = LLHArg$roll_n %||% 52L,
+      roll_align = LLHArg$roll_align %||% "center",
+      poisson_weight = LLHArg$poisson_weight %||% 1,
+      lambda_floor = LLHArg$lambda_floor %||% 0
     ))
   }
 
@@ -680,19 +816,32 @@ Model.RunSim.LLH <- function(
   }
 
   # Dirichlet
-  LLH.Dirichlet(
-    y_mat = target$y,
+  LLH.CondDirMult(
+    y_mat = round(target$y),
     sim_mat = sim_mat,
     kappa = LLHArg$kappa %||% 100,
     N_vec = target$N_week,
     c = LLHArg$c %||% 1e-8,
-    weight = LLHArg$weight %||% "sum_y_capN",
+    weight = LLHArg$weight %||% NULL, # ignored in cond-DM; kept only for compatibility
     add_roll_poisson = LLHArg$add_roll_poisson %||% TRUE,
     roll_n = LLHArg$roll_n %||% 52L,
     roll_align = LLHArg$roll_align %||% "center",
     poisson_weight = LLHArg$poisson_weight %||% 1,
     lambda_floor = LLHArg$lambda_floor %||% 0
   )
+  # LLH.Dirichlet(
+  #   y_mat = target$y,
+  #   sim_mat = sim_mat,
+  #   kappa = LLHArg$kappa %||% 100,
+  #   N_vec = target$N_week,
+  #   c = LLHArg$c %||% 1e-8,
+  #   weight = LLHArg$weight %||% "sum_y_capN",
+  #   add_roll_poisson = LLHArg$add_roll_poisson %||% TRUE,
+  #   roll_n = LLHArg$roll_n %||% 52L,
+  #   roll_align = LLHArg$roll_align %||% "center",
+  #   poisson_weight = LLHArg$poisson_weight %||% 1,
+  #   lambda_floor = LLHArg$lambda_floor %||% 0
+  # )
 }
 
 
@@ -1530,7 +1679,9 @@ MCMC.MH.Adaptive <- function(
     gamma = 0.6,
     eps_cov = 1e-6
   ),
-  verbose = TRUE
+  verbose = TRUE,
+  progress_callback = NULL,
+  report_every = 100L
 ) {
   Method <- match.arg(Method)
   n_virus <- length(BaseParm[["beta0"]])
@@ -1615,9 +1766,11 @@ MCMC.MH.Adaptive <- function(
     pb <- progress::progress_bar$new(
       total = n_iterations,
       clear = TRUE,
+      show_after = 0,
+      force = TRUE,
       format = "  [:bar] :percent :etas"
     )
-    pb$tick()
+    pb$tick(0)
   }
 
   for (i in 2:n_iterations) {
@@ -1667,7 +1820,15 @@ MCMC.MH.Adaptive <- function(
     }
 
     scale_hist[i] <- exp(log_lambda)
-    if (verbose) pb$tick()
+    if (verbose) {
+      pb$tick()
+    }
+    if (
+      !is.null(progress_callback) &&
+        (i %% report_every == 0L || i == n_iterations)
+    ) {
+      progress_callback(i, n_iterations)
+    }
   }
 
   attr(chain, "LLH") <- llh_trace
@@ -1796,109 +1957,6 @@ MCMC.DecodeChain <- function(
   do.call(cbind, parts)
 }
 
-# Parallelization ----------------------------------------------------------------
-
-# MCMC.RunChains.Future <- function(
-#   n_chain = 4L,
-#   InitialList = NULL,
-#   n_iterations,
-#   step = 0.1,
-#   TargetDat = NULL,
-#   Prep = NULL,
-#   Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet"),
-#   BaseParm = Parameter.Create(),
-#   after = as.Date("2015-08-31"),
-#   before = as.Date("2020-01-01"),
-#   LLHArg = list(),
-#   PriorArg = list(),
-#   Adapt = list(),
-#   workers = min(n_chain, future::availableCores()),
-#   seed = 123,
-#   source_r = NULL,
-#   source_cpp = NULL,
-#   wait = TRUE
-# ) {
-#   Method <- match.arg(Method)
-#   n_virus <- length(BaseParm[["beta0"]])
-
-#   if (is.null(Prep)) {
-#     if (is.null(TargetDat)) {
-#       stop("Provide either Prep or TargetDat.")
-#     }
-#     Prep <- Inference.Setup(
-#       TargetDat = TargetDat,
-#       BaseParm = BaseParm,
-#       after = after,
-#       before = before,
-#       viruses = LLHArg$viruses %||% paste0("Virus_", seq_len(n_virus))
-#     )
-#   }
-
-#   if (is.null(InitialList)) {
-#     InitialList <- MCMC.MakeInitialList(
-#       n_chain = n_chain,
-#       Initial = NULL,
-#       Method = Method,
-#       n_virus = n_virus,
-#       jitter = 0.3,
-#       seed = seed
-#     )
-#   }
-#   stopifnot(length(InitialList) == n_chain)
-
-#   old_plan <- plan()
-#   plan(multisession, workers = workers)
-
-#   # 仅同步模式下自动恢复 plan
-#   if (wait) {
-#     on.exit(plan(old_plan), add = TRUE)
-#   }
-
-#   fs <- lapply(seq_len(n_chain), function(k) {
-#     future(
-#       {
-#         if (!is.null(source_r)) {
-#           source(source_r)
-#         }
-
-#         if (!is.null(source_cpp)) {
-#           # 避免并发 sourceCpp 冲突：每个 worker 用独立 cache 目录
-#           cache_dir <- file.path(tempdir(), paste0("rcpp_cache_", Sys.getpid()))
-#           dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
-#           sourceCpp(source_cpp, cacheDir = cache_dir, rebuild = FALSE)
-#         }
-
-#         MCMC.MH.Adaptive(
-#           Initial = InitialList[[k]],
-#           n_iterations = n_iterations,
-#           step = step,
-#           Prep = Prep,
-#           Method = Method,
-#           BaseParm = BaseParm,
-#           after = after,
-#           before = before,
-#           LLHArg = LLHArg,
-#           PriorArg = PriorArg,
-#           Adapt = Adapt,
-#           verbose = FALSE
-#         )
-#       },
-#       seed = seed + k
-#     )
-#   })
-#   names(fs) <- paste0("chain_", seq_len(n_chain))
-
-#   if (wait) {
-#     chains <- lapply(fs, future::value)
-#     names(chains) <- names(fs)
-#     return(chains)
-#   }
-
-#   structure(
-#     list(futures = fs, old_plan = old_plan),
-#     class = "mcmc_future_job"
-#   )
-# }
 
 MCMC.ToLong <- function(chain) {
   Dat <- do.call(
@@ -2015,18 +2073,22 @@ MCMC.Simulate <- function(
     fill = TRUE
   )
 
+  MergeData[, Monday := as.Date(ISOweek::ISOweek2date(paste0(ISOweek, "-1")))]
+
   ggplot(
     MergeData,
-    aes(x = ISOweek, y = PosRate, color = Group, group = Group)
+    aes(x = Monday, y = PosRate, color = Group, group = Group)
   ) +
     geom_line(linewidth = 0.9, na.rm = TRUE) +
     facet_wrap(~Virus, ncol = 1, scales = "free_y") +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "4 months") +
     labs(
       x = "Time",
       y = "Positive Rate",
       color = ""
     ) +
-    theme_minimal(base_size = 13)
+    theme_minimal(base_size = 13) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
 }
 
 
