@@ -176,6 +176,8 @@ Inference.ResolveInferArg <- function(InferArg = list(), n_virus = 4L) {
     list(
       infer_penal = FALSE,
       penal_center_with_comp = FALSE,
+      infer_beta_seasonal = FALSE,
+      infer_phi = FALSE,
       infer_NPISes = FALSE,
       NPISes_shared = FALSE
     ),
@@ -185,6 +187,8 @@ Inference.ResolveInferArg <- function(InferArg = list(), n_virus = 4L) {
   out$infer_penal <- isTRUE(out$infer_penal)
   out$penal_center_with_comp <- isTRUE(out$penal_center_with_comp) &&
     out$infer_penal
+  out$infer_beta_seasonal <- isTRUE(out$infer_beta_seasonal)
+  out$infer_phi <- isTRUE(out$infer_phi)
   out$infer_NPISes <- isTRUE(out$infer_NPISes)
   out$NPISes_shared <- isTRUE(out$NPISes_shared)
 
@@ -501,15 +505,8 @@ LLH.RollingMaxPoisson <- function(
 
 
 #' Calculate the log-likelihood for the Dirichlet method.
-#' @param X matrix of observed proportions
+#' @param Y matrix of observed proportions
 #' @param Alpha matrix of concentration parameters
-LLH.Dirichlet.PMF <- function(X, Alpha) {
-  lgamma(rowSums(Alpha)) -
-    rowSums(lgamma(Alpha)) +
-    rowSums((Alpha - 1) * log(X))
-}
-
-
 LLH.DirMult.PMF <- function(Y, Alpha) {
   Y <- as.matrix(Y)
   Alpha <- as.matrix(Alpha)
@@ -548,87 +545,6 @@ LLH.DirMult.PMF <- function(Y, Alpha) {
 #' - "sum_y_capN" uses the sum of observed counts capped by N_vec,
 #' - "N" uses N_vec directly,
 #' - "none" uses no weighting
-LLH.Dirichlet <- function(
-  y_mat,
-  sim_mat,
-  kappa,
-  N_vec = NULL,
-  c = 1e-8,
-  weight = c("sum_y_capN", "N", "none"),
-  add_roll_poisson = TRUE,
-  roll_n = 52L,
-  roll_align = "center",
-  poisson_weight = 1,
-  lambda_floor = 0
-) {
-  weight <- match.arg(weight)
-  if (!is.finite(kappa) || kappa <= 0) {
-    return(-Inf)
-  }
-
-  keep <- apply(is.finite(y_mat), 1, all) &
-    apply(is.finite(sim_mat), 1, all) &
-    rowSums(y_mat, na.rm = TRUE) > 0 &
-    rowSums(sim_mat, na.rm = TRUE) > 0
-
-  if (!any(keep)) {
-    return(-Inf)
-  }
-
-  Y <- y_mat[keep, , drop = FALSE]
-  M <- sim_mat[keep, , drop = FALSE]
-
-  S_obs <- Y + c
-  S_obs <- sweep(S_obs, 1, rowSums(S_obs), "/")
-
-  S_sim <- pmax(M, 0) + c
-  S_sim <- sweep(S_sim, 1, rowSums(S_sim), "/")
-
-  if (weight == "none") {
-    w <- rep(1, nrow(Y))
-  } else if (weight == "N") {
-    if (is.null(N_vec)) {
-      stop("weight = 'N' requires N_vec.")
-    }
-    N_use <- N_vec[keep]
-    if (any(!is.finite(N_use))) {
-      stop("weight = 'N' but some N_vec are missing.")
-    }
-    w <- N_use
-  } else {
-    w <- rowSums(Y)
-    if (!is.null(N_vec)) {
-      N_use <- N_vec[keep]
-      ok <- is.finite(N_use)
-      w[ok] <- pmin(w[ok], N_use[ok])
-    }
-  }
-
-  Alpha <- sweep(S_sim, 1, kappa * pmax(w, 1), "*")
-  Alpha <- pmax(Alpha, 1e-12)
-
-  llh_dir <- sum(LLH.Dirichlet.PMF(S_obs, Alpha))
-
-  if (
-    !isTRUE(add_roll_poisson) ||
-      !is.finite(poisson_weight) ||
-      poisson_weight == 0
-  ) {
-    return(llh_dir)
-  }
-
-  llh_roll <- LLH.RollingMaxPoisson(
-    y_mat = y_mat,
-    sim_mat = sim_mat,
-    roll_n = roll_n,
-    roll_align = roll_align,
-    lambda_floor = lambda_floor
-  )
-
-  llh_dir + poisson_weight * llh_roll
-}
-
-
 LLH.CondDirMult <- function(
   y_mat,
   sim_mat,
@@ -829,19 +745,6 @@ Model.RunSim.LLH <- function(
     poisson_weight = LLHArg$poisson_weight %||% 1,
     lambda_floor = LLHArg$lambda_floor %||% 0
   )
-  # LLH.Dirichlet(
-  #   y_mat = target$y,
-  #   sim_mat = sim_mat,
-  #   kappa = LLHArg$kappa %||% 100,
-  #   N_vec = target$N_week,
-  #   c = LLHArg$c %||% 1e-8,
-  #   weight = LLHArg$weight %||% "sum_y_capN",
-  #   add_roll_poisson = LLHArg$add_roll_poisson %||% TRUE,
-  #   roll_n = LLHArg$roll_n %||% 52L,
-  #   roll_align = LLHArg$roll_align %||% "center",
-  #   poisson_weight = LLHArg$poisson_weight %||% 1,
-  #   lambda_floor = LLHArg$lambda_floor %||% 0
-  # )
 }
 
 
@@ -910,40 +813,31 @@ Inference.ParamSpec <- function(
     LogDiff = "log_sigma"
   )
 
+  npises_names <- if (ia$infer_NPISes) {
+    if (ia$NPISes_shared) {
+      "log_NPISes_shared"
+    } else {
+      paste0("log_NPISes_", seq_len(n_virus))
+    }
+  } else {
+    character(0)
+  }
+
   base_aux_names <- c(
     if (ia$infer_penal && !ia$penal_center_with_comp) "penal" else character(0),
-    if (ia$infer_NPISes) {
-      if (ia$NPISes_shared) {
-        "log_NPISes_shared"
-      } else {
-        paste0("log_NPISes_", seq_len(n_virus))
-      }
-    } else {
-      character(0)
-    }
+    if (ia$infer_beta_seasonal) "beta_seasonal" else character(0),
+    if (ia$infer_phi) "phi" else character(0),
+    npises_names
   )
 
   par_names <- c(comp_names, method_aux_names, base_aux_names)
-  ptr <- length(comp_names)
 
-  idx_method_aux <- if (length(method_aux_names) > 0L) {
-    (ptr + 1L):(ptr + length(method_aux_names))
-  } else {
-    integer(0)
-  }
-  ptr <- ptr + length(method_aux_names)
-
-  idx_penal <- if (ia$infer_penal && !ia$penal_center_with_comp) {
-    ptr + 1L
-  } else {
-    integer(0)
-  }
-  ptr <- ptr + length(idx_penal)
-
-  idx_npises <- if (ia$n_npises > 0L) {
-    (ptr + 1L):(ptr + ia$n_npises)
-  } else {
-    integer(0)
+  get_idx <- function(x) {
+    if (length(x) == 0L) {
+      return(integer(0))
+    }
+    out <- match(x, par_names)
+    out[!is.na(out)]
   }
 
   list(
@@ -957,12 +851,83 @@ Inference.ParamSpec <- function(
     par_names = par_names,
     n_par = length(par_names),
     idx = list(
-      comp = seq_along(comp_names),
-      method_aux = idx_method_aux,
-      penal = idx_penal,
-      npises = idx_npises
+      comp = get_idx(comp_names),
+      method_aux = get_idx(method_aux_names),
+      penal = get_idx("penal"),
+      npises = get_idx(npises_names),
+      beta_seasonal = get_idx("beta_seasonal"),
+      phi = get_idx("phi")
     )
   )
+  # base_aux_names <- c(
+  #   if (ia$infer_penal && !ia$penal_center_with_comp) "penal" else character(0),
+  #   if (ia$infer_phi) "phi" else character(0),
+  #   if (ia$infer_beta_seasonal) "beta_seasonal" else character(0),
+  #   if (ia$infer_NPISes) {
+  #     if (ia$NPISes_shared) {
+  #       "log_NPISes_shared"
+  #     } else {
+  #       paste0("log_NPISes_", seq_len(n_virus))
+  #     }
+  #   } else {
+  #     character(0)
+  #   }
+  # )
+
+  # par_names <- c(comp_names, method_aux_names, base_aux_names)
+  # ptr <- length(comp_names)
+
+  # idx_method_aux <- if (length(method_aux_names) > 0L) {
+  #   (ptr + 1L):(ptr + length(method_aux_names))
+  # } else {
+  #   integer(0)
+  # }
+  # ptr <- ptr + length(method_aux_names)
+
+  # idx_penal <- if (ia$infer_penal && !ia$penal_center_with_comp) {
+  #   ptr + 1L
+  # } else {
+  #   integer(0)
+  # }
+  # ptr <- ptr + length(idx_penal)
+
+  # idx_npises <- if (ia$n_npises > 0L) {
+  #   (ptr + 1L):(ptr + ia$n_npises)
+  # } else {
+  #   integer(0)
+  # }
+  # ptr <- ptr + length(idx_npises)
+
+  # idx_beta_seasonal <- if (ia$infer_beta_seasonal) {
+  #   ptr + 1L
+  # } else {
+  #   integer(0)
+  # }
+  # ptr <- ptr + length(idx_beta_seasonal)
+
+  # idx_phi <- if (ia$infer_phi) {
+  #   ptr + 1L
+  # }
+
+  # list(
+  #   Method = Method,
+  #   n_virus = n_virus,
+  #   Infer = ia,
+  #   comp_names = comp_names,
+  #   method_aux_names = method_aux_names,
+  #   base_aux_names = base_aux_names,
+  #   aux_names = c(method_aux_names, base_aux_names),
+  #   par_names = par_names,
+  #   n_par = length(par_names),
+  #   idx = list(
+  #     comp = seq_along(comp_names),
+  #     method_aux = idx_method_aux,
+  #     penal = idx_penal,
+  #     npises = idx_npises,
+  #     beta_seasonal = idx_beta_seasonal,
+  #     phi = idx_phi
+  #   )
+  # )
 }
 
 
@@ -1021,6 +986,12 @@ Inference.DecodeTheta <- function(
     z <- theta[spec$idx$npises]
     out$NPISes <- if (ia$NPISes_shared) rep(exp(z[1L]), n_virus) else exp(z)
   }
+  if (ia$infer_beta_seasonal) {
+    out$beta_seasonal <- theta[spec$idx$beta_seasonal]
+  }
+  if (ia$infer_phi) {
+    out$phi <- theta[spec$idx$phi]
+  }
 
   out
 }
@@ -1077,6 +1048,14 @@ MCMC.MakeInitial <- function(
       }
       theta0[spec$idx$npises] <- log(np0)
     }
+  }
+
+  if (length(spec$idx$beta_seasonal) == 1L) {
+    theta0[spec$idx$beta_seasonal] <- as.numeric(BaseParm[["beta_seasonal"]])
+  }
+
+  if (length(spec$idx$phi) == 1L) {
+    theta0[spec$idx$phi] <- as.numeric(BaseParm[["phi"]])
   }
 
   if (is.null(Initial)) {
@@ -1182,6 +1161,16 @@ MCMC.MakeInitial <- function(
       }
     }
 
+    if (
+      length(spec$idx$beta_seasonal) == 1L && !is.null(Initial$beta_seasonal)
+    ) {
+      theta0[spec$idx$beta_seasonal] <- as.numeric(Initial$beta_seasonal)
+    }
+
+    if (length(spec$idx$phi) == 1L && !is.null(Initial$phi)) {
+      theta0[spec$idx$phi] <- as.numeric(Initial$phi)
+    }
+
     return(theta0)
   }
 
@@ -1285,7 +1274,13 @@ MCMC.Proposal <- function(
   if (length(idx_comp) > 0L) {
     out[idx_comp] <- out[idx_comp] + rnorm(length(idx_comp), 0, steps$comp)
   }
-  idx_aux <- c(spec$idx$method_aux, spec$idx$penal, spec$idx$npises)
+  idx_aux <- c(
+    spec$idx$method_aux,
+    spec$idx$penal,
+    spec$idx$npises,
+    spec$idx$beta_seasonal,
+    spec$idx$phi
+  )
   if (length(idx_aux) > 0L) {
     out[idx_aux] <- out[idx_aux] + rnorm(length(idx_aux), 0, steps$aux)
   }
@@ -1524,6 +1519,26 @@ MCMC.LogPrior.Theta <- function(
     lp <- lp + sum(dnorm(z, mu, sd, log = TRUE))
   }
 
+  if (length(spec$idx$beta_seasonal) == 1L) {
+    lp <- lp +
+      dnorm(
+        theta[spec$idx$beta_seasonal],
+        mean = PriorArg$mu_beta_seasonal %||% 0,
+        sd = PriorArg$sd_beta_seasonal %||% 1,
+        log = TRUE
+      )
+  }
+
+  if (length(spec$idx$phi) == 1L) {
+    lp <- lp +
+      dnorm(
+        theta[spec$idx$phi],
+        mean = PriorArg$mu_phi %||% 0,
+        sd = PriorArg$sd_phi %||% 1,
+        log = TRUE
+      )
+  }
+
   lp
 }
 
@@ -1571,6 +1586,12 @@ MCMC.EvaluateTheta <- function(
   }
   if (!is.null(decoded$NPISes)) {
     Parm[["NPISes"]] <- decoded$NPISes
+  }
+  if (!is.null(decoded$beta_seasonal)) {
+    Parm[["beta_seasonal"]] <- decoded$beta_seasonal
+  }
+  if (!is.null(decoded$phi)) {
+    Parm[["phi"]] <- decoded$phi
   }
 
   LLHArg_cur <- LLHArg
@@ -2088,7 +2109,8 @@ MCMC.Simulate <- function(
       color = ""
     ) +
     theme_minimal(base_size = 13) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.position = "none")
 }
 
 
