@@ -825,8 +825,8 @@ Inference.ParamSpec <- function(
 
   base_aux_names <- c(
     if (ia$infer_penal && !ia$penal_center_with_comp) "penal" else character(0),
-    if (ia$infer_beta_seasonal) "beta_seasonal" else character(0),
-    if (ia$infer_phi) "phi" else character(0),
+    if (ia$infer_beta_seasonal) "z_beta_seasonal" else character(0),
+    if (ia$infer_phi) "z_phi" else character(0),
     npises_names
   )
 
@@ -855,8 +855,8 @@ Inference.ParamSpec <- function(
       method_aux = get_idx(method_aux_names),
       penal = get_idx("penal"),
       npises = get_idx(npises_names),
-      beta_seasonal = get_idx("beta_seasonal"),
-      phi = get_idx("phi")
+      beta_seasonal = get_idx("z_beta_seasonal"),
+      phi = get_idx("z_phi")
     )
   )
   # base_aux_names <- c(
@@ -987,10 +987,10 @@ Inference.DecodeTheta <- function(
     out$NPISes <- if (ia$NPISes_shared) rep(exp(z[1L]), n_virus) else exp(z)
   }
   if (ia$infer_beta_seasonal) {
-    out$beta_seasonal <- theta[spec$idx$beta_seasonal]
+    out$beta_seasonal <- plogis(theta[spec$idx$beta_seasonal])
   }
   if (ia$infer_phi) {
-    out$phi <- theta[spec$idx$phi]
+    out$phi <- 365 * plogis(theta[spec$idx$phi])
   }
 
   out
@@ -1050,12 +1050,20 @@ MCMC.MakeInitial <- function(
     }
   }
 
+  eps <- 1e-9
+
   if (length(spec$idx$beta_seasonal) == 1L) {
-    theta0[spec$idx$beta_seasonal] <- as.numeric(BaseParm[["beta_seasonal"]])
+    b0 <- as.numeric(BaseParm[["beta_seasonal"]] %||% 0.5)
+    theta0[spec$idx$beta_seasonal] <- qlogis(
+      Utility.Clamp01(b0, epsilon = eps)
+    )
   }
 
   if (length(spec$idx$phi) == 1L) {
-    theta0[spec$idx$phi] <- as.numeric(BaseParm[["phi"]])
+    p0 <- as.numeric(BaseParm[["phi"]] %||% 182.5)
+    theta0[spec$idx$phi] <- qlogis(
+      Utility.Clamp01(p0 / 365, epsilon = eps)
+    )
   }
 
   if (is.null(Initial)) {
@@ -1164,11 +1172,17 @@ MCMC.MakeInitial <- function(
     if (
       length(spec$idx$beta_seasonal) == 1L && !is.null(Initial$beta_seasonal)
     ) {
-      theta0[spec$idx$beta_seasonal] <- as.numeric(Initial$beta_seasonal)
+      b0 <- as.numeric(Initial$beta_seasonal)
+      theta0[spec$idx$beta_seasonal] <- qlogis(
+        Utility.Clamp01(b0, epsilon = eps)
+      )
     }
 
     if (length(spec$idx$phi) == 1L && !is.null(Initial$phi)) {
-      theta0[spec$idx$phi] <- as.numeric(Initial$phi)
+      p0 <- as.numeric(Initial$phi)
+      theta0[spec$idx$phi] <- qlogis(
+        Utility.Clamp01(p0 / 365, epsilon = eps)
+      )
     }
 
     return(theta0)
@@ -1237,6 +1251,16 @@ MCMC.ResolveStep <- function(
   for (j in seq_along(spec$aux_names)) {
     nm <- spec$aux_names[j]
     if (!is.null(step[[nm]])) step_aux[j] <- step[[nm]]
+  }
+
+  if (length(spec$idx$beta_seasonal) == 1L && !is.null(step$beta_seasonal)) {
+    j <- match("z_beta_seasonal", spec$aux_names)
+    step_aux[j] <- step$beta_seasonal
+  }
+
+  if (length(spec$idx$phi) == 1L && !is.null(step$phi)) {
+    j <- match("z_phi", spec$aux_names)
+    step_aux[j] <- step$phi
   }
 
   list(comp = step_comp, aux = step_aux)
@@ -1523,8 +1547,8 @@ MCMC.LogPrior.Theta <- function(
     lp <- lp +
       dnorm(
         theta[spec$idx$beta_seasonal],
-        mean = PriorArg$mu_beta_seasonal %||% 0,
-        sd = PriorArg$sd_beta_seasonal %||% 1,
+        mean = PriorArg$mu_logit_beta_seasonal %||% 0,
+        sd = PriorArg$sd_logit_beta_seasonal %||% 1.5,
         log = TRUE
       )
   }
@@ -1533,8 +1557,8 @@ MCMC.LogPrior.Theta <- function(
     lp <- lp +
       dnorm(
         theta[spec$idx$phi],
-        mean = PriorArg$mu_phi %||% 0,
-        sd = PriorArg$sd_phi %||% 1,
+        mean = PriorArg$mu_logit_phi365 %||% 0,
+        sd = PriorArg$sd_logit_phi365 %||% 1.5,
         log = TRUE
       )
   }
