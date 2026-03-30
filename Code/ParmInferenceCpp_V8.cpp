@@ -41,6 +41,7 @@ List ParmInferenceCpp(double time, const NumericVector &state,
   const double added_cases = as<double>(parms["added_cases"]);
   const double Penalty = as<double>(parms["Penalty"]);
   const double Restrain = as<double>(parms["Restrain"]);
+  const NumericVector PartialProtection = parms["PartialProtection"];
 
   const NumericVector beta0 = parms["beta0"];
   const NumericVector gamma = parms["gamma"];
@@ -114,6 +115,7 @@ List ParmInferenceCpp(double time, const NumericVector &state,
     const double Ii = state[idxI];
     const double Xi = state[idxX];
     const double Ri = state[idxR];
+    const double pRi = PartialProtection[i];
 
     // Mechanism 1: virus competition
     const double stress_i = A - comp[i] * B;
@@ -136,13 +138,15 @@ List ParmInferenceCpp(double time, const NumericVector &state,
     const double coinf_factor = std::exp(-Penalty * I_other_prev);
 
     // Incidence (cases per day)
-    const double inc_i = lambda_i * S_eff * coinf_factor;
+    const double incS_i = lambda_i * S_eff * coinf_factor;
+    const double incR_i = lambda_i * (pRi * Ri) * coinf_factor;
+    const double inc_i = incS_i + incR_i;
 
     // SIR with waning
-    dydt[idxS] = -inc_i - added_cases + omega[i] * Ri;
+    dydt[idxS] = -incS_i - added_cases + omega[i] * Ri;
     dydt[idxI] = inc_i + added_cases - gamma[i] * Ii;
     dydt[idxX] = gamma[i] * Ii - Restrain * Xi;
-    dydt[idxR] = gamma[i] * Ii - omega[i] * Ri;
+    dydt[idxR] = gamma[i] * Ii - omega[i] * Ri - incR_i;
 
     out[i] = inc_i + added_cases;
     out_names[i] = "Inc_" + to_string(i + 1);
