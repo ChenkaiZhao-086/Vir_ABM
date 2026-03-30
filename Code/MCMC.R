@@ -26,10 +26,7 @@ Utility.CircDist365 <- function(phi, center, period = 365) {
 #' @return list: ISOweek, viruses, y (matrix), N (matrix), N_week, n_virus
 Target.Prepare <- function(TargetDat, viruses = NULL) {
   DT <- copy(TargetDat)
-
-  if (is.null(viruses)) {
-    viruses <- sort(unique(as.character(DT$Virus)))
-  }
+  viruses <- viruses %||% sort(unique(as.character(DT$Virus)))
   DT <- DT[Virus %in% viruses]
 
   if (nrow(DT) == 0L) {
@@ -52,10 +49,8 @@ Target.Prepare <- function(TargetDat, viruses = NULL) {
     }
     if (!v %in% names(N_wide)) N_wide[[v]] <- NA_real_
   }
-
   setcolorder(y_wide, c("ISOweek", viruses))
   setcolorder(N_wide, c("ISOweek", viruses))
-
   y_wide <- y_wide[order(y_wide$ISOweek)]
   N_wide <- N_wide[match(y_wide$ISOweek, N_wide$ISOweek)]
 
@@ -98,24 +93,23 @@ Model.MakeWeekMap <- function(
   after = as.Date("2015-08-31"),
   before = as.Date("2020-01-06")
 ) {
-  times <- as.numeric(seq(
-    from = as.Date(Parm[["year_start"]]),
-    to = as.Date(Parm[["year_end"]]),
+  dates <- seq(
+    as.Date(Parm[["year_start"]]),
+    as.Date(Parm[["year_end"]]),
     by = 1
-  ))
-  dates <- as.Date(times, origin = "1970-01-01")
+  )
+  times <- as.numeric(dates)
   monday <- dates - (as.integer(strftime(dates, "%u")) - 1L)
 
   keep <- dates >= after & dates <= before
   monday_keep <- monday[keep]
-  week_levels <- unique(monday_keep)
-  group <- factor(monday_keep, levels = week_levels, ordered = TRUE)
+  group <- factor(monday_keep, levels = unique(monday_keep), ordered = TRUE)
 
   list(
     times = times,
     keep = keep,
     group = group,
-    ISOweek = strftime(week_levels, "%G-W%V"),
+    ISOweek = strftime(levels(group), "%G-W%V"),
     n_day_in_week = as.integer(table(group))
   )
 }
@@ -134,13 +128,9 @@ Inference.Setup <- function(
   before = as.Date("2020-01-06"),
   viruses = NULL
 ) {
-  if (is.null(viruses)) {
-    viruses <- paste0("Virus_", seq_along(BaseParm[["beta0"]]))
-  }
-
+  viruses <- viruses %||% paste0("Virus_", seq_along(BaseParm[["beta0"]]))
   target <- Target.Prepare(TargetDat, viruses = viruses)
   week_map <- Model.MakeWeekMap(BaseParm, after = after, before = before)
-
   sim_index <- match(target$ISOweek, week_map$ISOweek)
   keep <- !is.na(sim_index)
 
@@ -161,18 +151,16 @@ Inference.Setup <- function(
   target$N <- target$N[keep, , drop = FALSE]
   target$N_week <- target$N_week[keep]
 
-  init_state <- Get.InitState(
-    population = BaseParm[["num_of_agent"]],
-    initial_seeds = BaseParm[["initial_seeds"]],
-    Base_Immu = BaseParm[["base_immune"]],
-    n_virus = length(BaseParm[["beta0"]])
-  )
-
   list(
     target = target,
     week_map = week_map,
     sim_index = sim_index[keep],
-    init_state = init_state,
+    init_state = Get.InitState(
+      population = BaseParm[["num_of_agent"]],
+      initial_seeds = BaseParm[["initial_seeds"]],
+      Base_Immu = BaseParm[["base_immune"]],
+      n_virus = length(BaseParm[["beta0"]])
+    ),
     after = after,
     before = before
   )
@@ -183,26 +171,22 @@ Inference.Setup <- function(
 #' @param InferArg list of inference arguments
 #' @param n_virus  number of viruses
 Inference.ResolveInferArg <- function(InferArg = list(), n_virus = 4L) {
-  out <- modifyList(
-    list(
-      infer_penal = FALSE,
-      penal_center_with_comp = FALSE,
-      infer_beta_seasonal = FALSE,
-      infer_phi = FALSE,
-      infer_NPISes = FALSE,
-      NPISes_shared = FALSE
+  out <- lapply(
+    modifyList(
+      list(
+        infer_penal = FALSE,
+        penal_center_with_comp = FALSE,
+        infer_beta_seasonal = FALSE,
+        infer_phi = FALSE,
+        infer_NPISes = FALSE,
+        NPISes_shared = FALSE
+      ),
+      InferArg
     ),
-    InferArg
+    isTRUE
   )
 
-  out$infer_penal <- isTRUE(out$infer_penal)
-  out$penal_center_with_comp <- isTRUE(out$penal_center_with_comp) &&
-    out$infer_penal
-  out$infer_beta_seasonal <- isTRUE(out$infer_beta_seasonal)
-  out$infer_phi <- isTRUE(out$infer_phi)
-  out$infer_NPISes <- isTRUE(out$infer_NPISes)
-  out$NPISes_shared <- isTRUE(out$NPISes_shared)
-
+  out$penal_center_with_comp <- out$penal_center_with_comp && out$infer_penal
   out$n_npises <- if (!out$infer_NPISes) {
     0L
   } else if (out$NPISes_shared) {
@@ -210,7 +194,6 @@ Inference.ResolveInferArg <- function(InferArg = list(), n_virus = 4L) {
   } else {
     as.integer(n_virus)
   }
-
   out
 }
 
@@ -230,7 +213,6 @@ Model.RunSim.Weekly <- function(
 ) {
   metric <- match.arg(metric)
   n_virus <- length(Parm[["beta0"]])
-
   if (is.null(InitState) || length(InitState) != 3 * n_virus) {
     InitState <- Get.InitState(
       population = Parm[["num_of_agent"]],
@@ -248,20 +230,15 @@ Model.RunSim.Weekly <- function(
     method = "rk4"
   ))
 
-  if (metric == "Inc_sum") {
-    cols <- grep("^Inc_\\d+$", colnames(sim))
-    if (length(cols) == 0L) {
-      stop("No incidence columns matching '^Inc_\\d+$' found in ODE output.")
-    }
-    daily <- sim[WeekMap$keep, cols, drop = FALSE]
-    weekly <- rowsum(daily, group = WeekMap$group, reorder = FALSE)
-  } else {
-    cols <- grep("^I_\\d+$", colnames(sim))
-    if (length(cols) == 0L) {
-      stop("No state columns matching '^I_\\d+$' found in ODE output.")
-    }
-    daily <- sim[WeekMap$keep, cols, drop = FALSE]
-    weekly <- rowsum(daily, group = WeekMap$group, reorder = FALSE)
+  pat <- if (metric == "Inc_sum") "^Inc_\\d+$" else "^I_\\d+$"
+  cols <- grep(pat, colnames(sim))
+  if (!length(cols)) {
+    stop(sprintf("No columns matching '%s' found in ODE output.", pat))
+  }
+
+  daily <- sim[WeekMap$keep, cols, drop = FALSE]
+  weekly <- rowsum(daily, group = WeekMap$group, reorder = FALSE)
+  if (metric == "I_mean") {
     weekly <- sweep(weekly, 1, WeekMap$n_day_in_week, "/")
   }
 
@@ -674,7 +651,7 @@ Model.RunSim.LLH <- function(
       stop("Provide either Prep or TargetDat.")
     }
     Prep <- Inference.Setup(
-      TargetDat = TargetDat,
+      TargetDat,
       BaseParm = Parm,
       after = after,
       before = before,
@@ -682,21 +659,18 @@ Model.RunSim.LLH <- function(
     )
   }
 
-  proxy <- LLHArg$proxy %||% "Inc_sum"
-  epsilon <- LLHArg$epsilon %||% 1e-9
   target <- Prep$target
-
   sim <- Model.RunSim.Weekly(
-    Parm = Parm,
-    WeekMap = Prep$week_map,
-    metric = proxy,
+    Parm,
+    Prep$week_map,
+    metric = LLHArg$proxy %||% "Inc_sum",
     InitState = Prep$init_state
   )
 
   sim_mat <- sim$mat[Prep$sim_index, target$viruses, drop = FALSE]
   p_sim_mat <- Utility.Clamp01(
     sim_mat / Parm[["num_of_agent"]],
-    epsilon = epsilon
+    LLHArg$epsilon %||% 1e-9
   )
 
   if (Method == "BetaBinomial") {
@@ -705,7 +679,7 @@ Model.RunSim.LLH <- function(
       N_mat = target$N,
       p_sim_mat = p_sim_mat,
       rho = LLHArg$rho %||% 0.02,
-      epsilon = epsilon,
+      epsilon = LLHArg$epsilon %||% 1e-9,
       add_roll_poisson = LLHArg$add_roll_poisson %||% TRUE,
       roll_n = LLHArg$roll_n %||% 52L,
       roll_align = LLHArg$roll_align %||% "center",
@@ -716,29 +690,31 @@ Model.RunSim.LLH <- function(
 
   if (Method %in% c("RatioAbs", "LogDiff")) {
     pseudo <- LLHArg$pseudo %||% 0.5
-    p_obs_mat <- (target$y + pseudo) / (target$N + 2 * pseudo)
+    p_obs_mat <- Utility.Clamp01(
+      (target$y + pseudo) / (target$N + 2 * pseudo),
+      LLHArg$epsilon %||% 1e-9
+    )
     p_obs_mat[!is.finite(target$N) | target$N < 0] <- NA_real_
-    p_obs_mat <- Utility.Clamp01(p_obs_mat, epsilon = epsilon)
   }
 
   if (Method == "RatioAbs") {
     return(LLH.RatioAbs(
-      p_obs_mat = p_obs_mat,
-      p_sim_mat = p_sim_mat,
-      viruses = target$viruses,
-      sigma_ratio = LLHArg$sigma_ratio %||% 0.7,
-      sigma_abs = LLHArg$sigma_abs %||% 0.7,
-      epsilon = epsilon
+      p_obs_mat,
+      p_sim_mat,
+      target$viruses,
+      LLHArg$sigma_ratio %||% 0.7,
+      LLHArg$sigma_abs %||% 0.7,
+      LLHArg$epsilon %||% 1e-9
     ))
   }
 
   if (Method == "LogDiff") {
     return(LLH.LogDiff(
-      p_obs_mat = p_obs_mat,
-      p_sim_mat = p_sim_mat,
-      transform = LLHArg$transform %||% "logit",
-      sigma = LLHArg$sigma %||% 0.7,
-      epsilon = epsilon
+      p_obs_mat,
+      p_sim_mat,
+      LLHArg$transform %||% "logit",
+      LLHArg$sigma %||% 0.7,
+      LLHArg$epsilon %||% 1e-9
     ))
   }
 
@@ -777,8 +753,7 @@ MCMC.LogPrior.Comp <- function(comp = NULL, eta = NULL, sd = 1) {
     if (any(!is.finite(comp))) {
       return(-Inf)
     }
-    comp <- comp - mean(comp)
-    return(sum(dnorm(comp, mean = 0, sd = sd, log = TRUE)))
+    return(sum(dnorm(comp - mean(comp), 0, sd, log = TRUE)))
   }
   if (is.null(eta)) {
     stop("Provide either comp or eta.")
@@ -787,7 +762,7 @@ MCMC.LogPrior.Comp <- function(comp = NULL, eta = NULL, sd = 1) {
   if (any(!is.finite(eta))) {
     return(-Inf)
   }
-  sum(dnorm(c(eta, -sum(eta)), mean = 0, sd = sd, log = TRUE))
+  sum(dnorm(c(eta, -sum(eta)), 0, sd, log = TRUE))
 }
 
 
@@ -824,14 +799,12 @@ Inference.ParamSpec <- function(
     LogDiff = "log_sigma"
   )
 
-  npises_names <- if (ia$infer_NPISes) {
-    if (ia$NPISes_shared) {
-      "log_NPISes_shared"
-    } else {
-      paste0("log_NPISes_", seq_len(n_virus))
-    }
-  } else {
+  npises_names <- if (!ia$infer_NPISes) {
     character(0)
+  } else if (ia$NPISes_shared) {
+    "log_NPISes_shared"
+  } else {
+    paste0("log_NPISes_", seq_len(n_virus))
   }
 
   base_aux_names <- c(
@@ -842,13 +815,12 @@ Inference.ParamSpec <- function(
   )
 
   par_names <- c(comp_names, method_aux_names, base_aux_names)
-
   get_idx <- function(x) {
-    if (length(x) == 0L) {
+    if (!length(x)) {
       return(integer(0))
     }
-    out <- match(x, par_names)
-    out[!is.na(out)]
+    i <- match(x, par_names)
+    i[!is.na(i)]
   }
 
   list(
@@ -870,75 +842,6 @@ Inference.ParamSpec <- function(
       phi = get_idx("phi_raw")
     )
   )
-  # base_aux_names <- c(
-  #   if (ia$infer_penal && !ia$penal_center_with_comp) "penal" else character(0),
-  #   if (ia$infer_phi) "phi" else character(0),
-  #   if (ia$infer_beta_seasonal) "beta_seasonal" else character(0),
-  #   if (ia$infer_NPISes) {
-  #     if (ia$NPISes_shared) {
-  #       "log_NPISes_shared"
-  #     } else {
-  #       paste0("log_NPISes_", seq_len(n_virus))
-  #     }
-  #   } else {
-  #     character(0)
-  #   }
-  # )
-
-  # par_names <- c(comp_names, method_aux_names, base_aux_names)
-  # ptr <- length(comp_names)
-
-  # idx_method_aux <- if (length(method_aux_names) > 0L) {
-  #   (ptr + 1L):(ptr + length(method_aux_names))
-  # } else {
-  #   integer(0)
-  # }
-  # ptr <- ptr + length(method_aux_names)
-
-  # idx_penal <- if (ia$infer_penal && !ia$penal_center_with_comp) {
-  #   ptr + 1L
-  # } else {
-  #   integer(0)
-  # }
-  # ptr <- ptr + length(idx_penal)
-
-  # idx_npises <- if (ia$n_npises > 0L) {
-  #   (ptr + 1L):(ptr + ia$n_npises)
-  # } else {
-  #   integer(0)
-  # }
-  # ptr <- ptr + length(idx_npises)
-
-  # idx_beta_seasonal <- if (ia$infer_beta_seasonal) {
-  #   ptr + 1L
-  # } else {
-  #   integer(0)
-  # }
-  # ptr <- ptr + length(idx_beta_seasonal)
-
-  # idx_phi <- if (ia$infer_phi) {
-  #   ptr + 1L
-  # }
-
-  # list(
-  #   Method = Method,
-  #   n_virus = n_virus,
-  #   Infer = ia,
-  #   comp_names = comp_names,
-  #   method_aux_names = method_aux_names,
-  #   base_aux_names = base_aux_names,
-  #   aux_names = c(method_aux_names, base_aux_names),
-  #   par_names = par_names,
-  #   n_par = length(par_names),
-  #   idx = list(
-  #     comp = seq_along(comp_names),
-  #     method_aux = idx_method_aux,
-  #     penal = idx_penal,
-  #     npises = idx_npises,
-  #     beta_seasonal = idx_beta_seasonal,
-  #     phi = idx_phi
-  #   )
-  # )
 }
 
 
@@ -982,16 +885,19 @@ Inference.DecodeTheta <- function(
   }
 
   idx_m <- spec$idx$method_aux
-  if (Method == "BetaBinomial") {
-    out$rho <- plogis(theta[idx_m[1L]])
-  } else if (Method == "Dirichlet") {
-    out$kappa <- exp(theta[idx_m[1L]])
-  } else if (Method == "RatioAbs") {
-    out$sigma_ratio <- exp(theta[idx_m[1L]])
-    out$sigma_abs <- exp(theta[idx_m[2L]])
-  } else if (Method == "LogDiff") {
-    out$sigma <- exp(theta[idx_m[1L]])
-  }
+  out <- c(
+    out,
+    switch(
+      Method,
+      BetaBinomial = list(rho = plogis(theta[idx_m[1L]])),
+      Dirichlet = list(kappa = exp(theta[idx_m[1L]])),
+      RatioAbs = list(
+        sigma_ratio = exp(theta[idx_m[1L]]),
+        sigma_abs = exp(theta[idx_m[2L]])
+      ),
+      LogDiff = list(sigma = exp(theta[idx_m[1L]]))
+    )
+  )
 
   if (length(spec$idx$npises) > 0L) {
     z <- theta[spec$idx$npises]
@@ -1004,7 +910,6 @@ Inference.DecodeTheta <- function(
     out$phi_raw <- theta[spec$idx$phi]
     out$phi <- Utility.Wrap365(theta[spec$idx$phi])
   }
-
   out
 }
 
@@ -1030,18 +935,16 @@ MCMC.MakeInitial <- function(
     InferArg = InferArg
   )
   ia <- spec$Infer
+  eps <- 1e-9
 
-  aux_default <- switch(
+  theta0 <- setNames(rep(0, spec$n_par), spec$par_names)
+  theta0[spec$idx$method_aux] <- switch(
     Method,
     BetaBinomial = qlogis(0.02),
     Dirichlet = log(100),
     RatioAbs = c(log(0.7), log(0.7)),
     LogDiff = log(0.7)
   )
-
-  theta0 <- rep(0, spec$n_par)
-  names(theta0) <- spec$par_names
-  theta0[spec$idx$method_aux] <- aux_default
 
   if (length(spec$idx$penal) == 1L) {
     theta0[spec$idx$penal] <- BaseParm[["Penal"]] %||% 0
@@ -1061,16 +964,13 @@ MCMC.MakeInitial <- function(
       theta0[spec$idx$npises] <- log(np0)
     }
   }
-
-  eps <- 1e-9
-
   if (length(spec$idx$beta_seasonal) == 1L) {
-    b0 <- as.numeric(BaseParm[["beta_seasonal"]] %||% 0.5)
-    theta0[spec$idx$beta_seasonal] <- qlogis(
-      Utility.Clamp01(b0, epsilon = eps)
-    )
+    theta0[spec$idx$beta_seasonal] <-
+      qlogis(Utility.Clamp01(
+        as.numeric(BaseParm[["beta_seasonal"]] %||% 0.5),
+        epsilon = eps
+      ))
   }
-
   if (length(spec$idx$phi) == 1L) {
     theta0[spec$idx$phi] <- as.numeric(BaseParm[["phi"]] %||% 182.5)
   }
@@ -1079,76 +979,99 @@ MCMC.MakeInitial <- function(
     return(theta0)
   }
 
-  if (is.list(Initial)) {
-    if (!is.null(Initial$theta)) {
-      th <- as.numeric(Initial$theta)
-      if (length(th) != spec$n_par) {
-        stop("Initial$theta has wrong length.")
-      }
-      return(th)
+  # ── numeric vector ──────────────────────────────────────────────────────────
+  if (!is.list(Initial)) {
+    Initial <- as.numeric(Initial)
+    n_comp <- length(spec$idx$comp)
+    if (length(Initial) == spec$n_par) {
+      return(Initial)
     }
+    if (length(Initial) == n_comp) {
+      theta0[spec$idx$comp] <- Initial
+      return(theta0)
+    }
+    if (!ia$penal_center_with_comp && length(Initial) == n_virus) {
+      theta0[spec$idx$comp] <- (Initial - mean(Initial))[seq_len(n_virus - 1L)]
+      return(theta0)
+    }
+    if (ia$penal_center_with_comp && length(Initial) == n_virus + 1L) {
+      theta0[spec$idx$comp] <- (Initial - mean(Initial))[seq_len(n_virus)]
+      return(theta0)
+    }
+    stop("Initial has unsupported length.")
+  }
 
-    if (ia$penal_center_with_comp) {
-      if (!is.null(Initial$cp_full)) {
-        cp_full <- as.numeric(Initial$cp_full)
-        if (length(cp_full) != n_virus + 1L) {
-          stop("Initial$cp_full must have length n_virus + 1.")
-        }
-      } else {
-        comp0 <- as.numeric(
-          Initial$comp %||% (BaseParm[["comp"]] %||% rep(0, n_virus))
-        )
-        pen0 <- as.numeric(
-          Initial$Penal %||% Initial$penal %||% (BaseParm[["Penal"]] %||% 0)
-        )
-        if (length(comp0) != n_virus) {
-          stop("Initial$comp must have length n_virus.")
-        }
-        cp_full <- c(comp0, pen0)
+  # ── named list ──────────────────────────────────────────────────────────────
+  if (!is.null(Initial$theta)) {
+    th <- as.numeric(Initial$theta)
+    if (length(th) != spec$n_par) {
+      stop("Initial$theta has wrong length.")
+    }
+    return(th)
+  }
+
+  if (ia$penal_center_with_comp) {
+    if (!is.null(Initial$cp_full)) {
+      cp_full <- as.numeric(Initial$cp_full)
+      if (length(cp_full) != n_virus + 1L) {
+        stop("Initial$cp_full must have length n_virus + 1.")
       }
-      if (any(!is.finite(cp_full))) {
-        stop("Initial cp/penal contains non-finite values.")
-      }
-      cp_full <- cp_full - mean(cp_full)
-      theta0[spec$idx$comp] <- cp_full[seq_len(n_virus)]
     } else {
-      comp_in <- Initial$comp %||% Initial$eta
-      if (!is.null(comp_in)) {
-        comp_in <- as.numeric(comp_in)
-        if (length(comp_in) == n_virus) {
-          comp_in <- comp_in - mean(comp_in)
-          theta0[spec$idx$comp] <- comp_in[seq_len(n_virus - 1L)]
-        } else if (length(comp_in) == n_virus - 1L) {
-          theta0[spec$idx$comp] <- comp_in
-        } else {
-          stop("Initial$comp / Initial$eta has wrong length.")
-        }
+      comp0 <- as.numeric(
+        Initial$comp %||% (BaseParm[["comp"]] %||% rep(0, n_virus))
+      )
+      pen0 <- as.numeric(
+        Initial$Penal %||% Initial$penal %||% (BaseParm[["Penal"]] %||% 0)
+      )
+      if (length(comp0) != n_virus) {
+        stop("Initial$comp must have length n_virus.")
       }
-      if (length(spec$idx$penal) == 1L) {
-        p0 <- Initial$Penal %||% Initial$penal
-        if (!is.null(p0)) theta0[spec$idx$penal] <- as.numeric(p0)
+      cp_full <- c(comp0, pen0)
+    }
+    if (any(!is.finite(cp_full))) {
+      stop("Initial cp/penal contains non-finite values.")
+    }
+    theta0[spec$idx$comp] <- (cp_full - mean(cp_full))[seq_len(n_virus)]
+  } else {
+    comp_in <- Initial$comp %||% Initial$eta
+    if (!is.null(comp_in)) {
+      comp_in <- as.numeric(comp_in)
+      if (length(comp_in) == n_virus) {
+        theta0[spec$idx$comp] <- (comp_in - mean(comp_in))[seq_len(
+          n_virus - 1L
+        )]
+      } else if (length(comp_in) == n_virus - 1L) {
+        theta0[spec$idx$comp] <- comp_in
+      } else {
+        stop("Initial$comp / Initial$eta has wrong length.")
       }
     }
+    if (length(spec$idx$penal) == 1L) {
+      p0 <- Initial$Penal %||% Initial$penal
+      if (!is.null(p0)) theta0[spec$idx$penal] <- as.numeric(p0)
+    }
+  }
 
-    if (Method == "BetaBinomial" && !is.null(Initial$rho)) {
-      theta0[spec$idx$method_aux[1L]] <- qlogis(Initial$rho)
+  if (!is.null(Initial$rho) && Method == "BetaBinomial") {
+    theta0[spec$idx$method_aux[1L]] <- qlogis(Initial$rho)
+  }
+  if (!is.null(Initial$kappa) && Method == "Dirichlet") {
+    theta0[spec$idx$method_aux[1L]] <- log(Initial$kappa)
+  }
+  if (Method == "RatioAbs") {
+    if (!is.null(Initial$sigma_ratio)) {
+      theta0[spec$idx$method_aux[1L]] <- log(Initial$sigma_ratio)
     }
-    if (Method == "Dirichlet" && !is.null(Initial$kappa)) {
-      theta0[spec$idx$method_aux[1L]] <- log(Initial$kappa)
+    if (!is.null(Initial$sigma_abs)) {
+      theta0[spec$idx$method_aux[2L]] <- log(Initial$sigma_abs)
     }
-    if (Method == "RatioAbs") {
-      if (!is.null(Initial$sigma_ratio)) {
-        theta0[spec$idx$method_aux[1L]] <- log(Initial$sigma_ratio)
-      }
-      if (!is.null(Initial$sigma_abs)) {
-        theta0[spec$idx$method_aux[2L]] <- log(Initial$sigma_abs)
-      }
-    }
-    if (Method == "LogDiff" && !is.null(Initial$sigma)) {
-      theta0[spec$idx$method_aux[1L]] <- log(Initial$sigma)
-    }
+  }
+  if (!is.null(Initial$sigma) && Method == "LogDiff") {
+    theta0[spec$idx$method_aux[1L]] <- log(Initial$sigma)
+  }
 
-    if (length(spec$idx$npises) > 0L && !is.null(Initial$NPISes)) {
+  if (length(spec$idx$npises) > 0L) {
+    if (!is.null(Initial$NPISes)) {
       np0 <- as.numeric(Initial$NPISes)
       if (ia$NPISes_shared) {
         theta0[spec$idx$npises] <- log(if (length(np0) > 1L) mean(np0) else np0)
@@ -1162,8 +1085,7 @@ MCMC.MakeInitial <- function(
         theta0[spec$idx$npises] <- log(np0)
       }
     }
-
-    if (length(spec$idx$npises) > 0L && !is.null(Initial$log_NPISes)) {
+    if (!is.null(Initial$log_NPISes)) {
       z <- as.numeric(Initial$log_NPISes)
       if (ia$NPISes_shared) {
         theta0[spec$idx$npises] <- if (length(z) > 1L) mean(z) else z
@@ -1177,51 +1099,24 @@ MCMC.MakeInitial <- function(
         theta0[spec$idx$npises] <- z
       }
     }
+  }
 
-    if (
-      length(spec$idx$beta_seasonal) == 1L && !is.null(Initial$beta_seasonal)
-    ) {
-      b0 <- as.numeric(Initial$beta_seasonal)
-      theta0[spec$idx$beta_seasonal] <- qlogis(
-        Utility.Clamp01(b0, epsilon = eps)
-      )
-    }
+  if (length(spec$idx$beta_seasonal) == 1L && !is.null(Initial$beta_seasonal)) {
+    theta0[spec$idx$beta_seasonal] <-
+      qlogis(Utility.Clamp01(as.numeric(Initial$beta_seasonal), epsilon = eps))
+  }
 
-    if (length(spec$idx$phi) == 1L && !is.null(Initial$phi)) {
+  if (length(spec$idx$phi) == 1L) {
+    if (!is.null(Initial$phi)) {
       theta0[spec$idx$phi] <- as.numeric(Initial$phi)
     }
-
-    if (length(spec$idx$phi) == 1L && !is.null(Initial$phi_raw)) {
+    if (!is.null(Initial$phi_raw)) {
       theta0[spec$idx$phi] <- as.numeric(Initial$phi_raw)
     }
-
-    return(theta0)
   }
 
-  # numeric Initial
-  Initial <- as.numeric(Initial)
-  if (length(Initial) == spec$n_par) {
-    return(Initial)
-  }
-  if (length(Initial) == length(spec$idx$comp)) {
-    theta0[spec$idx$comp] <- Initial
-    return(theta0)
-  }
-
-  if (!ia$penal_center_with_comp && length(Initial) == n_virus) {
-    x <- Initial - mean(Initial)
-    theta0[spec$idx$comp] <- x[seq_len(n_virus - 1L)]
-    return(theta0)
-  }
-  if (ia$penal_center_with_comp && length(Initial) == n_virus + 1L) {
-    x <- Initial - mean(Initial)
-    theta0[spec$idx$comp] <- x[seq_len(n_virus)]
-    return(theta0)
-  }
-
-  stop("Initial has unsupported length.")
+  theta0
 }
-
 
 # Proposal ------------------------------------------------------------------
 
@@ -1241,7 +1136,6 @@ MCMC.ResolveStep <- function(
     n_virus = n_virus,
     InferArg = InferArg
   )
-
   n_comp <- length(spec$idx$comp)
   n_aux <- length(spec$aux_names)
 
@@ -1262,15 +1156,11 @@ MCMC.ResolveStep <- function(
     nm <- spec$aux_names[j]
     if (!is.null(step[[nm]])) step_aux[j] <- step[[nm]]
   }
-
   if (length(spec$idx$beta_seasonal) == 1L && !is.null(step$beta_seasonal)) {
-    j <- match("z_beta_seasonal", spec$aux_names)
-    step_aux[j] <- step$beta_seasonal
+    step_aux[match("z_beta_seasonal", spec$aux_names)] <- step$beta_seasonal
   }
-
   if (length(spec$idx$phi) == 1L && !is.null(step$phi)) {
-    j <- match("phi_raw", spec$aux_names)
-    step_aux[j] <- step$phi
+    step_aux[match("phi_raw", spec$aux_names)] <- step$phi
   }
 
   list(comp = step_comp, aux = step_aux)
@@ -1302,7 +1192,6 @@ MCMC.Proposal <- function(
     n_virus = n_virus,
     InferArg = InferArg
   )
-
   out <- Theta
   idx_comp <- spec$idx$comp
   if (length(idx_comp) > 0L) {
@@ -1456,123 +1345,121 @@ MCMC.LogPrior.Theta <- function(
 
   lp <- 0
 
+  # comp / penal
   if (ia$penal_center_with_comp) {
-    cp_full <- c(theta[spec$idx$comp], -sum(theta[spec$idx$comp]))
+    x <- c(theta[spec$idx$comp], -sum(theta[spec$idx$comp]))
+    n <- length(x)
     mu <- PriorArg$mu_comp_penal %||% 0
-    sd <- PriorArg$sd_comp_penal %||% 1
     if (length(mu) == 1L) {
-      mu <- rep(mu, length(cp_full))
+      mu <- rep(mu, n)
     }
+    sd <- PriorArg$sd_comp_penal %||% 1
     if (length(sd) == 1L) {
-      sd <- rep(sd, length(cp_full))
+      sd <- rep(sd, n)
     }
-    if (length(mu) != length(cp_full) || length(sd) != length(cp_full)) {
+    if (length(mu) != n || length(sd) != n) {
       stop("mu_comp_penal / sd_comp_penal length mismatch.")
     }
-    lp <- lp + sum(dnorm(cp_full, mu, sd, log = TRUE))
+    lp <- lp + sum(dnorm(x, mu, sd, log = TRUE))
   } else {
-    comp_full <- c(theta[spec$idx$comp], -sum(theta[spec$idx$comp]))
+    x <- c(theta[spec$idx$comp], -sum(theta[spec$idx$comp]))
+    n <- length(x)
     mu <- PriorArg$mu_comp %||% 0
-    sd <- PriorArg$sd_comp %||% 1
     if (length(mu) == 1L) {
-      mu <- rep(mu, length(comp_full))
+      mu <- rep(mu, n)
     }
+    sd <- PriorArg$sd_comp %||% 1
     if (length(sd) == 1L) {
-      sd <- rep(sd, length(comp_full))
+      sd <- rep(sd, n)
     }
-    if (length(mu) != length(comp_full) || length(sd) != length(comp_full)) {
+    if (length(mu) != n || length(sd) != n) {
       stop("mu_comp / sd_comp length mismatch.")
     }
-    lp <- lp + sum(dnorm(comp_full, mu, sd, log = TRUE))
-
+    lp <- lp + sum(dnorm(x, mu, sd, log = TRUE))
     if (length(spec$idx$penal) == 1L) {
       lp <- lp +
         dnorm(
           theta[spec$idx$penal],
-          mean = PriorArg$mu_penal %||% 0,
-          sd = PriorArg$sd_penal %||% 1,
+          PriorArg$mu_penal %||% 0,
+          PriorArg$sd_penal %||% 1,
           log = TRUE
         )
     }
   }
 
+  # method-specific
   idx <- spec$idx$method_aux
-  if (Method == "BetaBinomial") {
-    lp <- lp +
-      dnorm(
+  lp <- lp +
+    switch(
+      Method,
+      BetaBinomial = dnorm(
         theta[idx[1L]],
         PriorArg$mu_logit_rho %||% qlogis(0.02),
         PriorArg$sd_logit_rho %||% 1.5,
         log = TRUE
-      )
-  } else if (Method == "Dirichlet") {
-    lp <- lp +
-      dnorm(
+      ),
+      Dirichlet = dnorm(
         theta[idx[1L]],
         PriorArg$mu_log_kappa %||% log(100),
         PriorArg$sd_log_kappa %||% 1,
         log = TRUE
-      )
-  } else if (Method == "RatioAbs") {
-    lp <- lp +
-      dnorm(
+      ),
+      RatioAbs = dnorm(
         theta[idx[1L]],
         PriorArg$mu_log_sigma_ratio %||% log(0.7),
         PriorArg$sd_log_sigma_ratio %||% 1,
         log = TRUE
       ) +
-      dnorm(
-        theta[idx[2L]],
-        PriorArg$mu_log_sigma_abs %||% log(0.7),
-        PriorArg$sd_log_sigma_abs %||% 1,
-        log = TRUE
-      )
-  } else if (Method == "LogDiff") {
-    lp <- lp +
-      dnorm(
+        dnorm(
+          theta[idx[2L]],
+          PriorArg$mu_log_sigma_abs %||% log(0.7),
+          PriorArg$sd_log_sigma_abs %||% 1,
+          log = TRUE
+        ),
+      LogDiff = dnorm(
         theta[idx[1L]],
         PriorArg$mu_log_sigma %||% log(0.7),
         PriorArg$sd_log_sigma %||% 1,
         log = TRUE
       )
-  }
+    )
 
+  # NPISes
   if (length(spec$idx$npises) > 0L) {
     z <- theta[spec$idx$npises]
+    n <- length(z)
     mu <- PriorArg$mu_log_NPISes %||% 0
-    sd <- PriorArg$sd_log_NPISes %||% 1
     if (length(mu) == 1L) {
-      mu <- rep(mu, length(z))
+      mu <- rep(mu, n)
     }
+    sd <- PriorArg$sd_log_NPISes %||% 1
     if (length(sd) == 1L) {
-      sd <- rep(sd, length(z))
+      sd <- rep(sd, n)
     }
-    if (length(mu) != length(z) || length(sd) != length(z)) {
+    if (length(mu) != n || length(sd) != n) {
       stop("mu_log_NPISes / sd_log_NPISes length mismatch.")
     }
     lp <- lp + sum(dnorm(z, mu, sd, log = TRUE))
   }
 
+  # beta_seasonal
   if (length(spec$idx$beta_seasonal) == 1L) {
     lp <- lp +
       dnorm(
         theta[spec$idx$beta_seasonal],
-        mean = PriorArg$mu_logit_beta_seasonal %||% 0,
-        sd = PriorArg$sd_logit_beta_seasonal %||% 1.5,
+        PriorArg$mu_logit_beta_seasonal %||% 0,
+        PriorArg$sd_logit_beta_seasonal %||% 1.5,
         log = TRUE
       )
   }
 
+  # phi
   if (length(spec$idx$phi) == 1L) {
-    dphi <- Utility.CircDist365(
-      theta[spec$idx$phi],
-      center = PriorArg$mu_phi %||% 182.5
-    )
     lp <- lp +
       dnorm(
-        dphi,
-        mean = 0,
-        sd = PriorArg$sd_phi %||% 60,
+        Utility.CircDist365(theta[spec$idx$phi], PriorArg$mu_phi %||% 182.5),
+        0,
+        PriorArg$sd_phi %||% 60,
         log = TRUE
       )
   }
@@ -1605,7 +1492,6 @@ MCMC.EvaluateTheta <- function(
 ) {
   Method <- match.arg(Method)
   n_virus <- length(BaseParm[["beta0"]])
-
   decoded <- Inference.DecodeTheta(
     theta = theta,
     Method = Method,
@@ -1619,48 +1505,34 @@ MCMC.EvaluateTheta <- function(
 
   Parm <- BaseParm
   Parm[["comp"]] <- decoded$comp
-  if (!is.null(decoded$Penal)) {
-    Parm[["Penal"]] <- decoded$Penal
-  }
-  if (!is.null(decoded$NPISes)) {
-    Parm[["NPISes"]] <- decoded$NPISes
-  }
-  if (!is.null(decoded$beta_seasonal)) {
-    Parm[["beta_seasonal"]] <- decoded$beta_seasonal
-  }
-  if (!is.null(decoded$phi)) {
-    Parm[["phi"]] <- decoded$phi
+  for (nm in c("Penal", "NPISes", "beta_seasonal", "phi")) {
+    if (!is.null(decoded[[nm]])) Parm[[nm]] <- decoded[[nm]]
   }
 
-  LLHArg_cur <- LLHArg
-  if (Method == "BetaBinomial") {
-    LLHArg_cur$rho <- decoded$rho
-  } else if (Method == "Dirichlet") {
-    LLHArg_cur$kappa <- decoded$kappa
-  } else if (Method == "RatioAbs") {
-    LLHArg_cur$sigma_ratio <- decoded$sigma_ratio
-    LLHArg_cur$sigma_abs <- decoded$sigma_abs
-  } else if (Method == "LogDiff") {
-    LLHArg_cur$sigma <- decoded$sigma
-  }
+  LLHArg_cur <- modifyList(
+    LLHArg,
+    switch(
+      Method,
+      BetaBinomial = list(rho = decoded$rho),
+      Dirichlet = list(kappa = decoded$kappa),
+      RatioAbs = list(
+        sigma_ratio = decoded$sigma_ratio,
+        sigma_abs = decoded$sigma_abs
+      ),
+      LogDiff = list(sigma = decoded$sigma)
+    )
+  )
 
   llh <- Model.RunSim.LLH(
-    Parm = Parm,
+    Parm,
     Prep = Prep,
     Method = Method,
     LLHArg = LLHArg_cur,
     after = after,
     before = before
   )
-  lpr <- MCMC.LogPrior.Theta(
-    theta = theta,
-    Method = Method,
-    n_virus = n_virus,
-    PriorArg = PriorArg,
-    InferArg = InferArg
-  )
+  lpr <- MCMC.LogPrior.Theta(theta, Method, n_virus, PriorArg, InferArg)
   lpo <- if (is.finite(llh) && is.finite(lpr)) llh + lpr else -Inf
-
   list(llh = llh, lpr = lpr, lpo = lpo)
 }
 
@@ -1771,13 +1643,18 @@ MCMC.MH.Adaptive <- function(
     InferArg = InferArg
   )
 
-  chain <- matrix(NA_real_, nrow = n_iterations, ncol = spec$n_par)
-  colnames(chain) <- spec$par_names
+  chain <- matrix(
+    NA_real_,
+    n_iterations,
+    spec$n_par,
+    dimnames = list(NULL, spec$par_names)
+  )
 
   llh_trace <- rep(NA_real_, n_iterations)
   lpr_trace <- rep(NA_real_, n_iterations)
   lpo_trace <- rep(NA_real_, n_iterations)
   accepted <- rep(FALSE, n_iterations)
+  scale_hist <- rep(NA_real_, n_iterations)
 
   eval0 <- MCMC.EvaluateTheta(
     theta = theta_init,
@@ -1815,9 +1692,7 @@ MCMC.MH.Adaptive <- function(
     if (spec$n_par == 1L) 0.44 else 0.234
 
   log_lambda <- 0
-  scale_hist <- rep(NA_real_, n_iterations)
   scale_hist[1] <- 1
-
   cov_state <- MCMC.CovUpdate(MCMC.CovInit(spec$n_par), theta_init)
   acc_batch <- 0L
 
@@ -1844,40 +1719,35 @@ MCMC.MH.Adaptive <- function(
       InferArg = InferArg
     )
 
-    if (
-      is.finite(eval_prop$lpo) &&
-        log(runif(1)) < eval_prop$lpo - lpo_trace[i - 1]
-    ) {
+    accept <- is.finite(eval_prop$lpo) &&
+      log(runif(1)) < eval_prop$lpo - lpo_trace[i - 1]
+    if (accept) {
       chain[i, ] <- proposal
       llh_trace[i] <- eval_prop$llh
       lpr_trace[i] <- eval_prop$lpr
       lpo_trace[i] <- eval_prop$lpo
-      accepted[i] <- TRUE
     } else {
       chain[i, ] <- chain[i - 1, ]
       llh_trace[i] <- llh_trace[i - 1]
       lpr_trace[i] <- lpr_trace[i - 1]
       lpo_trace[i] <- lpo_trace[i - 1]
     }
-
+    accepted[i] <- accept
     cov_state <- MCMC.CovUpdate(cov_state, chain[i, ])
 
     if (adapt_use && i >= adapt_start && i <= adapt_end) {
-      acc_batch <- acc_batch + accepted[i]
-
+      acc_batch <- acc_batch + accept
       if (((i - adapt_start + 1L) %% adapt_every) == 0L) {
         batch_id <- (i - adapt_start + 1L) / adapt_every
-        gamma_i <- 1 / ((batch_id + 10)^gamma_exp)
         log_lambda <- log_lambda +
-          gamma_i * (acc_batch / adapt_every - target_accept)
+          (acc_batch / adapt_every - target_accept) / (batch_id + 10)^gamma_exp
         Sigma_prop <- exp(2 * log_lambda) *
           ((2.38^2 / spec$n_par) *
-            MCMC.CovGet(cov_state, eps = eps_cov) +
+            MCMC.CovGet(cov_state, eps_cov) +
             diag(eps_cov, spec$n_par))
         acc_batch <- 0L
       }
     }
-
     scale_hist[i] <- exp(log_lambda)
     if (verbose) {
       pb$tick()
@@ -1910,124 +1780,5 @@ MCMC.MH.Adaptive <- function(
     final_cov = Sigma_prop,
     scale_history = scale_hist
   )
-
   chain
-}
-
-
-# Post-processing ----------------------------------------------------------------
-
-#' Decode the MCMC chain from the transformed scale back to the natural scale.
-#' @param chain        MCMC chain matrix (with Spec attribute, or provide n_virus)
-#' @param include_eta  if TRUE, prepend the raw free-parameter columns to the output
-MCMC.DecodeChain <- function(
-  chain,
-  Method = attr(chain, "Method"),
-  n_virus = NULL,
-  InferArg = attr(chain, "InferArg"),
-  include_eta = FALSE
-) {
-  chain <- as.matrix(chain)
-  spec <- attr(chain, "Spec")
-
-  if (is.null(spec)) {
-    if (is.null(n_virus)) {
-      stop("Please provide n_virus.")
-    }
-    spec <- Inference.ParamSpec(
-      Method = Method,
-      n_virus = n_virus,
-      InferArg = InferArg %||% list()
-    )
-  } else {
-    Method <- spec$Method
-    n_virus <- spec$n_virus
-  }
-
-  ia <- spec$Infer
-  parts <- list()
-  free_block <- chain[, spec$idx$comp, drop = FALSE]
-
-  if (include_eta) {
-    eta_block <- free_block
-    colnames(eta_block) <- spec$comp_names
-    parts <- c(parts, list(eta_block))
-  }
-
-  if (ia$penal_center_with_comp) {
-    cp_full <- cbind(free_block, -rowSums(free_block))
-    colnames(cp_full) <- c(paste0("comp_", seq_len(n_virus)), "Penal")
-    parts <- c(parts, list(cp_full))
-  } else {
-    comp_full <- cbind(free_block, -rowSums(free_block))
-    colnames(comp_full) <- paste0("comp_", seq_len(n_virus))
-    parts <- c(parts, list(comp_full))
-
-    if (length(spec$idx$penal) == 1L) {
-      pen <- matrix(
-        chain[, spec$idx$penal],
-        ncol = 1,
-        dimnames = list(NULL, "Penal")
-      )
-      parts <- c(parts, list(pen))
-    }
-  }
-
-  idx_m <- spec$idx$method_aux
-  aux <- switch(
-    Method,
-    BetaBinomial = matrix(
-      plogis(chain[, idx_m[1L]]),
-      ncol = 1,
-      dimnames = list(NULL, "rho")
-    ),
-    Dirichlet = matrix(
-      exp(chain[, idx_m[1L]]),
-      ncol = 1,
-      dimnames = list(NULL, "kappa")
-    ),
-    RatioAbs = cbind(
-      sigma_ratio = exp(chain[, idx_m[1L]]),
-      sigma_abs = exp(chain[, idx_m[2L]])
-    ),
-    LogDiff = matrix(
-      exp(chain[, idx_m[1L]]),
-      ncol = 1,
-      dimnames = list(NULL, "sigma")
-    )
-  )
-  parts <- c(parts, list(aux))
-  if (length(spec$idx$beta_seasonal) == 1L) {
-    bsea <- matrix(
-      plogis(chain[, spec$idx$beta_seasonal]),
-      ncol = 1,
-      dimnames = list(NULL, "beta_seasonal")
-    )
-    parts <- c(parts, list(bsea))
-  }
-
-  if (length(spec$idx$phi) == 1L) {
-    phi_mat <- matrix(
-      Utility.Wrap365(chain[, spec$idx$phi]),
-      ncol = 1,
-      dimnames = list(NULL, "phi")
-    )
-    parts <- c(parts, list(phi_mat))
-  }
-  if (length(spec$idx$npises) > 0L) {
-    z <- chain[, spec$idx$npises, drop = FALSE]
-    if (ia$NPISes_shared) {
-      npm <- matrix(
-        exp(z[, 1L]),
-        ncol = 1,
-        dimnames = list(NULL, "NPISes_shared")
-      )
-    } else {
-      npm <- exp(z)
-      colnames(npm) <- paste0("NPISes_", seq_len(ncol(npm)))
-    }
-    parts <- c(parts, list(npm))
-  }
-
-  do.call(cbind, parts)
 }

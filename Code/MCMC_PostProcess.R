@@ -1,3 +1,122 @@
+# Post-processing ----------------------------------------------------------------
+
+#' Decode the MCMC chain from the transformed scale back to the natural scale.
+#' @param chain        MCMC chain matrix (with Spec attribute, or provide n_virus)
+#' @param include_eta  if TRUE, prepend the raw free-parameter columns to the output
+MCMC.DecodeChain <- function(
+  chain,
+  Method = attr(chain, "Method"),
+  n_virus = NULL,
+  InferArg = attr(chain, "InferArg"),
+  include_eta = FALSE
+) {
+  chain <- as.matrix(chain)
+  spec <- attr(chain, "Spec")
+  if (is.null(spec)) {
+    if (is.null(n_virus)) {
+      stop("Please provide n_virus.")
+    }
+    spec <- Inference.ParamSpec(
+      Method = Method,
+      n_virus = n_virus,
+      InferArg = InferArg %||% list()
+    )
+  } else {
+    Method <- spec$Method
+    n_virus <- spec$n_virus
+  }
+
+  ia <- spec$Infer
+  parts <- list()
+  free_block <- chain[, spec$idx$comp, drop = FALSE]
+
+  if (include_eta) {
+    eta_block <- free_block
+    colnames(eta_block) <- spec$comp_names
+    parts <- c(parts, list(eta_block))
+  }
+
+  if (ia$penal_center_with_comp) {
+    cp_full <- cbind(free_block, -rowSums(free_block))
+    colnames(cp_full) <- c(paste0("comp_", seq_len(n_virus)), "Penal")
+    parts <- c(parts, list(cp_full))
+  } else {
+    comp_full <- cbind(free_block, -rowSums(free_block))
+    colnames(comp_full) <- paste0("comp_", seq_len(n_virus))
+    parts <- c(parts, list(comp_full))
+    if (length(spec$idx$penal) == 1L) {
+      pen <- matrix(
+        chain[, spec$idx$penal],
+        ncol = 1,
+        dimnames = list(NULL, "Penal")
+      )
+      parts <- c(parts, list(pen))
+    }
+  }
+
+  idx_m <- spec$idx$method_aux
+  aux <- switch(
+    Method,
+    BetaBinomial = matrix(
+      plogis(chain[, idx_m[1L]]),
+      ncol = 1,
+      dimnames = list(NULL, "rho")
+    ),
+    Dirichlet = matrix(
+      exp(chain[, idx_m[1L]]),
+      ncol = 1,
+      dimnames = list(NULL, "kappa")
+    ),
+    RatioAbs = cbind(
+      sigma_ratio = exp(chain[, idx_m[1L]]),
+      sigma_abs = exp(chain[, idx_m[2L]])
+    ),
+    LogDiff = matrix(
+      exp(chain[, idx_m[1L]]),
+      ncol = 1,
+      dimnames = list(NULL, "sigma")
+    )
+  )
+  parts <- c(parts, list(aux))
+
+  if (length(spec$idx$beta_seasonal) == 1L) {
+    parts <- c(
+      parts,
+      list(matrix(
+        plogis(chain[, spec$idx$beta_seasonal]),
+        ncol = 1,
+        dimnames = list(NULL, "beta_seasonal")
+      ))
+    )
+  }
+
+  if (length(spec$idx$phi) == 1L) {
+    parts <- c(
+      parts,
+      list(matrix(
+        Utility.Wrap365(chain[, spec$idx$phi]),
+        ncol = 1,
+        dimnames = list(NULL, "phi")
+      ))
+    )
+  }
+
+  if (length(spec$idx$npises) > 0L) {
+    z <- chain[, spec$idx$npises, drop = FALSE]
+    npm <- if (ia$NPISes_shared) {
+      matrix(exp(z[, 1L]), ncol = 1, dimnames = list(NULL, "NPISes_shared"))
+    } else {
+      m <- exp(z)
+      colnames(m) <- paste0("NPISes_", seq_len(ncol(m)))
+      m
+    }
+    parts <- c(parts, list(npm))
+  }
+
+  do.call(cbind, parts)
+}
+
+
 Utility.CircMean365 <- function(phi, period = 365) {
   ang <- 2 * pi * (Utility.Wrap365(phi, period = period) - 1) / period
   mu <- atan2(mean(sin(ang), na.rm = TRUE), mean(cos(ang), na.rm = TRUE))
