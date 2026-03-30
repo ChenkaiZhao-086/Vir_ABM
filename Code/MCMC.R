@@ -4,6 +4,17 @@ Utility.Clamp01 <- function(p, epsilon = 1e-9) {
 
 Utility.Logit <- function(p) log(p / (1 - p))
 
+
+Utility.Wrap365 <- function(phi, period = 365) {
+  ((phi - 1) %% period) + 1
+}
+
+Utility.CircDist365 <- function(phi, center, period = 365) {
+  x <- Utility.Wrap365(phi, period = period)
+  c0 <- Utility.Wrap365(center, period = period)
+  d <- x - c0
+  ((d + period / 2) %% period) - period / 2
+}
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
 
@@ -470,13 +481,13 @@ LLH.RollingMaxPoisson <- function(
   Obs_roll <- matrix(NA_real_, nr, nc)
 
   for (j in seq_len(nc)) {
-    Sim_roll[, j] <- data.table::frollmax(
+    Sim_roll[, j] <- frollmax(
       as.numeric(Sim[, j]),
       n = roll_n,
       align = roll_align,
       na.rm = TRUE
     )
-    Obs_roll[, j] <- data.table::frollmax(
+    Obs_roll[, j] <- frollmax(
       as.numeric(Obs[, j]),
       n = roll_n,
       align = roll_align,
@@ -826,7 +837,7 @@ Inference.ParamSpec <- function(
   base_aux_names <- c(
     if (ia$infer_penal && !ia$penal_center_with_comp) "penal" else character(0),
     if (ia$infer_beta_seasonal) "z_beta_seasonal" else character(0),
-    if (ia$infer_phi) "z_phi" else character(0),
+    if (ia$infer_phi) "phi_raw" else character(0),
     npises_names
   )
 
@@ -856,7 +867,7 @@ Inference.ParamSpec <- function(
       penal = get_idx("penal"),
       npises = get_idx(npises_names),
       beta_seasonal = get_idx("z_beta_seasonal"),
-      phi = get_idx("z_phi")
+      phi = get_idx("phi_raw")
     )
   )
   # base_aux_names <- c(
@@ -990,7 +1001,8 @@ Inference.DecodeTheta <- function(
     out$beta_seasonal <- plogis(theta[spec$idx$beta_seasonal])
   }
   if (ia$infer_phi) {
-    out$phi <- 365 * plogis(theta[spec$idx$phi])
+    out$phi_raw <- theta[spec$idx$phi]
+    out$phi <- Utility.Wrap365(theta[spec$idx$phi])
   }
 
   out
@@ -1060,10 +1072,7 @@ MCMC.MakeInitial <- function(
   }
 
   if (length(spec$idx$phi) == 1L) {
-    p0 <- as.numeric(BaseParm[["phi"]] %||% 182.5)
-    theta0[spec$idx$phi] <- qlogis(
-      Utility.Clamp01(p0 / 365, epsilon = eps)
-    )
+    theta0[spec$idx$phi] <- as.numeric(BaseParm[["phi"]] %||% 182.5)
   }
 
   if (is.null(Initial)) {
@@ -1179,10 +1188,11 @@ MCMC.MakeInitial <- function(
     }
 
     if (length(spec$idx$phi) == 1L && !is.null(Initial$phi)) {
-      p0 <- as.numeric(Initial$phi)
-      theta0[spec$idx$phi] <- qlogis(
-        Utility.Clamp01(p0 / 365, epsilon = eps)
-      )
+      theta0[spec$idx$phi] <- as.numeric(Initial$phi)
+    }
+
+    if (length(spec$idx$phi) == 1L && !is.null(Initial$phi_raw)) {
+      theta0[spec$idx$phi] <- as.numeric(Initial$phi_raw)
     }
 
     return(theta0)
@@ -1259,7 +1269,7 @@ MCMC.ResolveStep <- function(
   }
 
   if (length(spec$idx$phi) == 1L && !is.null(step$phi)) {
-    j <- match("z_phi", spec$aux_names)
+    j <- match("phi_raw", spec$aux_names)
     step_aux[j] <- step$phi
   }
 
@@ -1554,11 +1564,15 @@ MCMC.LogPrior.Theta <- function(
   }
 
   if (length(spec$idx$phi) == 1L) {
+    dphi <- Utility.CircDist365(
+      theta[spec$idx$phi],
+      center = PriorArg$mu_phi %||% 182.5
+    )
     lp <- lp +
       dnorm(
-        theta[spec$idx$phi],
-        mean = PriorArg$mu_logit_phi365 %||% 0,
-        sd = PriorArg$sd_logit_phi365 %||% 1.5,
+        dphi,
+        mean = 0,
+        sd = PriorArg$sd_phi %||% 60,
         log = TRUE
       )
   }
@@ -1983,7 +1997,23 @@ MCMC.DecodeChain <- function(
     )
   )
   parts <- c(parts, list(aux))
+  if (length(spec$idx$beta_seasonal) == 1L) {
+    bsea <- matrix(
+      plogis(chain[, spec$idx$beta_seasonal]),
+      ncol = 1,
+      dimnames = list(NULL, "beta_seasonal")
+    )
+    parts <- c(parts, list(bsea))
+  }
 
+  if (length(spec$idx$phi) == 1L) {
+    phi_mat <- matrix(
+      Utility.Wrap365(chain[, spec$idx$phi]),
+      ncol = 1,
+      dimnames = list(NULL, "phi")
+    )
+    parts <- c(parts, list(phi_mat))
+  }
   if (length(spec$idx$npises) > 0L) {
     z <- chain[, spec$idx$npises, drop = FALSE]
     if (ia$NPISes_shared) {
@@ -2000,284 +2030,4 @@ MCMC.DecodeChain <- function(
   }
 
   do.call(cbind, parts)
-}
-
-
-MCMC.ToLong <- function(chain) {
-  Dat <- do.call(
-    rbind,
-    lapply(seq_along(chain), function(i) {
-      ch <- chain[[i]]
-      mat <- as.matrix(ch)
-      n <- nrow(mat)
-
-      mcpar <- attr(ch, "mcpar")
-      iter <- seq(from = mcpar[1], to = mcpar[2], by = mcpar[3])
-
-      data.frame(
-        Iteration = iter,
-        Chain = rep(paste0("Chain ", i), n),
-        as.data.frame(mat, check.names = FALSE),
-        check.names = FALSE
-      )
-    })
-  )
-
-  pivot_longer(
-    Dat,
-    cols = -c(Iteration, Chain),
-    names_to = "Parameter",
-    values_to = "Value"
-  )
-}
-
-
-#' Trace Plot
-MCMC.TracePlot <- function(chain) {
-  df <- MCMC.ToLong(chain)
-  ggplot(df, aes(x = Iteration, y = Value, color = Chain)) +
-    geom_line(alpha = 0.7, linewidth = 0.4) +
-    facet_wrap(~Parameter, scales = "free_y", ncol = 2) +
-    labs(x = "Iteration", y = NULL, color = NULL) +
-    theme_bw(base_size = 11) +
-    theme(legend.position = "none")
-}
-
-
-#' Density Plot
-MCMC.DensPlot <- function(chain) {
-  df <- MCMC.ToLong(chain)
-  ggplot(df, aes(x = Value, color = Chain, fill = Chain)) +
-    geom_density(alpha = 0.25, linewidth = 0.6) +
-    facet_wrap(~Parameter, scales = "free", ncol = 2) +
-    labs(x = NULL, y = "Density", color = NULL, fill = NULL) +
-    theme_bw(base_size = 11) +
-    theme(legend.position = "none")
-}
-
-
-#' Simulate epidemic curves
-MCMC.Simulate <- function(
-  ModelParm = list(),
-  comp,
-  n_virus = 4L,
-  after = as.Date("2019-01-01"),
-  ObsDat = NULL
-) {
-  virus_cols <- paste0("Virus_", 1:n_virus)
-  OverrideParm <- do.call(Parameter.Create, c(list(comp = comp), ModelParm))
-  SimData <- Model.RunSim.ode(
-    Parm = OverrideParm,
-    after = after
-  )
-  # Modify SimData
-  SimPlotData <- copy(SimData$Data)
-  SimPlotData <- SimPlotData[,
-    lapply(.SD, sum, na.rm = TRUE),
-    by = .(ISOweek),
-    .SDcols = virus_cols
-  ]
-  SimPlotData[,
-    (virus_cols) := lapply(.SD, function(x) x / 10000 * 100),
-    .SDcols = virus_cols
-  ]
-  SimPlotData <- melt(
-    SimPlotData,
-    id.vars = "ISOweek",
-    measure.vars = patterns("Virus_"),
-    variable.name = "Virus",
-    value.name = "PosRate"
-  )
-  SimPlotData[, Group := "Simulated"]
-
-  # Modify ObsDat
-  PlotData <- copy(ObsDat)
-  PlotData[,
-    `:=`(
-      Virus_1 = fifelse(IV_Tested > 0, IAV / IV_Tested * 100, NA_real_),
-      Virus_2 = fifelse(IV_Tested > 0, IBV / IV_Tested * 100, NA_real_),
-      Virus_3 = fifelse(RSV_Tested > 0, RSV / RSV_Tested * 100, NA_real_),
-      Virus_4 = fifelse(RV_Tested > 0, RV / RV_Tested * 100, NA_real_)
-    )
-  ]
-  PlotData[,
-    c("IV_Tested", "IAV", "IBV", "RSV_Tested", "RSV", "RV_Tested", "RV") := NULL
-  ]
-  PlotData <- melt(
-    PlotData,
-    id.vars = c("Location", "ISOweek", "Monday"),
-    measure.vars = patterns("Virus_"),
-    variable.name = "Virus",
-    value.name = "PosRate"
-  )
-  PlotData[, Group := "Observed"]
-
-  MergeData <- rbindlist(
-    list(PlotData, SimPlotData),
-    use.names = TRUE,
-    fill = TRUE
-  )
-
-  MergeData[, Monday := as.Date(ISOweek::ISOweek2date(paste0(ISOweek, "-1")))]
-
-  ggplot(
-    MergeData,
-    aes(x = Monday, y = PosRate, color = Group, group = Group)
-  ) +
-    geom_line(linewidth = 0.9, na.rm = TRUE) +
-    facet_wrap(~Virus, ncol = 1, scales = "free_y") +
-    scale_x_date(date_labels = "%Y-%m", date_breaks = "4 months") +
-    labs(
-      x = "Time",
-      y = "Positive Rate",
-      color = ""
-    ) +
-    theme_minimal(base_size = 13) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-    theme(legend.position = "none")
-}
-
-
-#' Post-process MCMC chains: burn-in, thinning, diagnostics, and summary.
-MCMC.PostProcess <- function(
-  dat,
-  n_virus = 4L,
-  burn_in = 5000L,
-  thin = 10L,
-  conf = 0.95,
-  include_eta = FALSE,
-  plot = TRUE,
-  after = as.Date("2015-08-31"),
-  ModelParm = list(),
-  ObsDat = NULL,
-  return_chain = TRUE
-) {
-  # Decode, burn-in, thinning per chain
-  chain_list <- vector("list", length(dat))
-  for (i in seq_along(dat)) {
-    decoded <- MCMC.DecodeChain(dat[[i]], include_eta = include_eta)
-    decoded <- as.matrix(decoded)
-
-    mat <- decoded[, seq_len(n_virus), drop = FALSE]
-    colnames(mat) <- paste0("Virus_", seq_len(n_virus))
-
-    n_raw <- nrow(mat)
-    keep_idx <- seq.int(from = burn_in + 1L, to = n_raw, by = thin)
-
-    # Try preserve original iteration index if rownames are numeric
-    iter_raw <- suppressWarnings(as.numeric(rownames(mat)))
-    if (length(iter_raw) != n_raw || anyNA(iter_raw)) {
-      iter_raw <- seq_len(n_raw)
-    }
-    start_iter <- iter_raw[keep_idx[1L]]
-
-    post_mat <- mat[keep_idx, , drop = FALSE]
-    chain_list[[i]] <- coda::mcmc(post_mat, start = start_iter, thin = thin)
-  }
-  Chain <- coda::mcmc.list(chain_list)
-  ChainSim <- lapply(Chain, \(x) x[, 1:(n_virus - 1L), drop = FALSE])
-
-  # Classical diagnostics
-  Geltest <- if (length(ChainSim) >= 2L) {
-    tryCatch(
-      coda::gelman.diag(ChainSim, autoburnin = FALSE, multivariate = TRUE),
-      error = function(e) e
-    )
-  }
-  Heitest <- tryCatch(coda::heidel.diag(ChainSim), error = function(e) e)
-  Geweke <- tryCatch(coda::geweke.diag(Chain), error = function(e) e)
-  ESS <- tryCatch(coda::effectiveSize(ChainSim), error = function(e) e)
-
-  # Posterior summary
-  draws_mat <- as.matrix(Chain) # combined chains
-  param_names <- colnames(draws_mat)
-
-  Mean <- colMeans(draws_mat)
-  Median <- apply(draws_mat, 2, stats::median)
-  SD <- apply(draws_mat, 2, stats::sd)
-
-  hpd_obj <- coda::HPDinterval(coda::as.mcmc(draws_mat), prob = conf)
-  CI <- hpd_obj[, c("lower", "upper"), drop = FALSE]
-
-  q_low <- (1 - conf) / 2
-  q_high <- 1 - q_low
-  ETI <- t(apply(
-    draws_mat,
-    2,
-    stats::quantile,
-    probs = c(q_low, q_high),
-    names = FALSE
-  ))
-  colnames(ETI) <- c("ETI_lower", "ETI_upper")
-
-  ess_vec <- rep(NA_real_, length(param_names))
-  names(ess_vec) <- param_names
-  if (!inherits(ESS, "error") && is.numeric(ESS)) {
-    hit <- intersect(names(ESS), param_names)
-    ess_vec[hit] <- ESS[hit]
-  }
-
-  MCSE_mean_classic <- SD / sqrt(ess_vec)
-
-  Summary <- data.frame(
-    Parameter = param_names,
-    Mean = Mean[param_names],
-    Median = Median[param_names],
-    SD = SD[param_names],
-    HPD_lower = CI[param_names, "lower"],
-    HPD_upper = CI[param_names, "upper"],
-    ETI_lower = ETI[param_names, "ETI_lower"],
-    ETI_upper = ETI[param_names, "ETI_upper"],
-    ESS_classic = ess_vec[param_names],
-    MCSE_mean_classic = MCSE_mean_classic[param_names],
-    check.names = FALSE,
-    row.names = NULL
-  )
-
-  posteriori <- sprintf(
-    "%.6f (%.6f, %.6f)",
-    Summary$Median,
-    Summary$HPD_lower,
-    Summary$HPD_upper
-  )
-  names(posteriori) <- Summary$Parameter
-
-  # Plots
-  Traceplot <- NULL
-  Densplot <- NULL
-  Rankplot <- NULL
-  ACFplot <- NULL
-  if (isTRUE(plot)) {
-    Traceplot <- MCMC.TracePlot(Chain)
-    # print(Traceplot)
-    Densplot <- MCMC.DensPlot(Chain)
-    # print(Densplot)
-    # Rankplot <- bayesplot::mcmc_rank_overlay(Chain)
-    # print(Rankplot)
-    # ACFplot <- bayesplot::mcmc_acf(Chain)
-    # print(ACFplot)
-    SimPlot <- MCMC.Simulate(
-      ModelParm = ModelParm,
-      comp = Median,
-      n_virus = n_virus,
-      after = after,
-      ObsDat = ObsDat
-    )
-  }
-
-  list(
-    Chain = if (isTRUE(return_chain)) Chain else NULL,
-    Traceplot = Traceplot,
-    Densplot = Densplot,
-    # Rankplot = Rankplot,
-    # ACFplot = ACFplot,
-    SimPlot = SimPlot,
-    Geltest = Geltest,
-    # Heitest = Heitest,
-    Geweke = Geweke,
-    ESS = ESS,
-    Summary = Summary,
-    CI = CI, # backward-compatible name (HPD CI)
-    posteriori = posteriori
-  )
 }
