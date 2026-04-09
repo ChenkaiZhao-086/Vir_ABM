@@ -5,15 +5,18 @@ Parameter.Create <- function(
   # Model base
   num_of_agent = 100000,
   dt = 1,
-  years = 16,
+  # years = 16,
   year_start = "1999-01-01",
   year_end = "2024-03-31",
   initial_seeds = 10,
-  added_cases = 2, # 每个病毒随机每天新引入的I，这里是每dt2个，相当于一周4个
+  added_cases = 0, # 每个病毒随机每天新引入的I，这里是每dt2个，相当于一周4个
+  mu = 1 / (80 * 365),
   penalty = 0.5, # 感染多病毒的惩罚系数
+  restrain = 1 / 15,
+  PartialProtection = c(0, 0, 0, 0),
 
   # R0
-  R0 = c(1.41, 1.07, 1.7, 1.88),
+  R0 = c(1.41, 1.25, 1.7, 1.88),
 
   # Seasonal force
   beta_seasonal = 0.2,
@@ -24,10 +27,12 @@ Parameter.Create <- function(
   gamma = c(1 / 6, 1 / 4, 1 / 7.4, 1 / 10.9),
 
   # Duration of immunity of each virus
-  omega = c(1 / (365 * 2), 1 / 424.1, 1 / 358.9, 1 / 36.5),
+  omega = c(1 / 365, 1 / 365, 1 / 358.9, 1 / 180),
 
   # Virus competition
-  comp = c(1, 1, 1, 1),
+  comp = c(0, 0, 0, 0),
+
+  I_ref = c(531, 509, 698, 1410),
 
   # NPI susceptibility
   NPISes = c(1, 1, 1, 1),
@@ -43,7 +48,7 @@ Parameter.Create <- function(
   # NPI_value = c(0), # range[0,1] 1 means totally no transmission(Full NPI)
   # decay_coef = c(0.01) # range[0,Inf] 0 means no decay
 ) {
-  beta0 <- (R0 * gamma) / (1 + beta_seasonal)
+  beta0 <- (R0 * gamma) #/ (1 + beta_seasonal)
 
   NPI_start_num <- as.numeric(as.Date(NPI_start))
   NPI_end_num <- as.numeric(as.Date(NPI_end))
@@ -54,12 +59,15 @@ Parameter.Create <- function(
       # Model base
       num_of_agent = num_of_agent,
       dt = dt,
-      years = years,
+      # years = years,
       year_start = year_start,
       year_end = year_end,
       initial_seeds = initial_seeds,
       added_cases = added_cases,
+      mu = mu,
       Penalty = penalty,
+      Restrain = restrain,
+      PartialProtection = PartialProtection,
 
       # Seasonal force
       beta_seasonal = beta_seasonal,
@@ -77,6 +85,7 @@ Parameter.Create <- function(
 
       # Virus competition
       comp = comp,
+      I_ref = I_ref,
 
       # NPI susceptibility
       NPISes = NPISes,

@@ -201,7 +201,8 @@ LLH.RollingMaxPoisson <- function(
   }
 
   RollMax <- function(x) {
-    frollmax(as.numeric(x), n = roll_n, align = roll_align, na.rm = TRUE)
+    # frollmax(as.numeric(x), n = roll_n, align = roll_align, na.rm = TRUE)
+    max(as.numeric(x), na.rm = TRUE)
   }
   Sim_roll <- apply(Sim, 2, RollMax)
   Obs_roll <- apply(Obs, 2, RollMax)

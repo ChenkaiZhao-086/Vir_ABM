@@ -391,3 +391,106 @@ save(
 #   ggplot(aes(x = Date, y = RVP, )) +
 #   geom_line() +
 #   facet_wrap(~Location, scales = "free_y")
+
+DT <- copy(RealData_c_Dir)
+# Monday 转为 IDate（data.table 的日期类型，更省内存）
+DT[, Monday := as.IDate(Monday)]
+
+# 按 Monday 所在年份计算 Year
+# 这是“根据 Monday 计算”的最直接写法
+DT[, Year := as.integer(format(Monday, "%Y"))]
+DT[,
+  c("IAV", "IBV", "RSV", "RV") := lapply(.SD, function(x) x / IV_Tested * 100),
+  .SDcols = c("IAV", "IBV", "RSV", "RV")
+]
+
+longDT <- melt(
+  DT[,
+    c("Location", "Monday", "ISOweek", "Year", "IAV", "IBV", "RSV", "RV"),
+    with = FALSE
+  ],
+  id.vars = c("Location", "Monday", "ISOweek", "Year"),
+  measure.vars = c("IAV", "IBV", "RSV", "RV"),
+  variable.name = "Virus",
+  value.name = "Value",
+  variable.factor = FALSE
+)
+
+setkey(longDT, Location, Year, Virus, Monday)
+
+
+peak_first <- longDT[
+  !is.na(Value),
+  {
+    m <- max(Value)
+    idx_all <- which(Value == m)
+    idx1 <- idx_all[1L] # 第一个出现峰值的位置
+
+    .(
+      PeakValue = m,
+      PeakDate = Monday[idx1],
+      PeakISOweek = ISOweek[idx1],
+      NPeakWeeks = length(idx_all) # 并列峰值出现了多少周
+    )
+  },
+  by = .(Location, Year, Virus)
+]
+
+setorder(peak_first, Location, Year, Virus)
+
+
+peak_all <- longDT[
+  !is.na(Value),
+  {
+    m <- max(Value)
+    idx <- which(Value == m)
+
+    .(
+      PeakValue = m,
+      PeakDate = Monday[idx],
+      PeakISOweek = ISOweek[idx],
+      NPeakWeeks = length(idx)
+    )
+  },
+  by = .(Location, Year, Virus)
+]
+
+setorder(peak_all, Location, Year, Virus, PeakDate)
+
+
+peak_wide <- dcast(
+  peak_first,
+  Location + Year ~ Virus,
+  value.var = c("PeakValue", "PeakDate"),
+  sep = "_"
+)
+
+peak_wide[]
+write.csv(peak_wide, "Data/Peak_First.csv", row.names = FALSE)
+
+loc_vec <- unique(longDT$Location)
+
+plot_list <- lapply(loc_vec, function(loc) {
+  ggplot(longDT[Location == loc], aes(x = Monday, y = Value, colour = Virus)) +
+    geom_line(linewidth = 0.6, na.rm = TRUE) +
+    # geom_point(
+    #   data = peak_first[Location == loc],
+    #   aes(x = PeakDate, y = PeakValue, colour = Virus),
+    #   size = 2,
+    #   inherit.aes = FALSE
+    # ) +
+    facet_wrap(~Virus, scales = "free_y", ncol = 1) +
+    scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+    labs(
+      title = loc,
+      x = "Monday",
+      y = "Value"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+})
+
+names(plot_list) <- loc_vec

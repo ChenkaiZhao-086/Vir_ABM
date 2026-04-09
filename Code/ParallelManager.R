@@ -54,6 +54,7 @@ MCMC.MakeInitialList <- function(
   Method = c("BetaBinomial", "RatioAbs", "LogDiff", "Dirichlet"),
   n_virus = 4L,
   jitter = 0.3,
+  InferArg = list(),
   seed = NULL
 ) {
   Method <- match.arg(Method)
@@ -62,11 +63,16 @@ MCMC.MakeInitialList <- function(
     set.seed(seed)
   }
 
-  spec <- Inference.ParamSpec(Method = Method, n_virus = n_virus)
+  spec <- Inference.ParamSpec(
+    Method = Method,
+    n_virus = n_virus,
+    InferArg = InferArg
+  )
   theta0 <- MCMC.MakeInitial(
     Initial = Initial,
     Method = Method,
-    n_virus = n_virus
+    n_virus = n_virus,
+    InferArg = InferArg
   )
 
   if (length(jitter) == 1L) {
@@ -225,6 +231,7 @@ MCMC.Future.ManagerCreate <- function(
   Submit <- function(
     n_chain = 4L,
     InitialList = NULL,
+    jitter = 0.03,
     n_iterations,
     step = 0.1,
     TargetDat = NULL,
@@ -286,8 +293,9 @@ MCMC.Future.ManagerCreate <- function(
         Initial = NULL,
         Method = Method,
         n_virus = n_virus,
-        jitter = 0.3,
-        seed = seed
+        jitter = jitter,
+        seed = seed,
+        InferArg = InferArg
       )
     }
     stopifnot(length(InitialList) == n_chain)

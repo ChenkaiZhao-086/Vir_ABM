@@ -113,6 +113,13 @@ MCMC.DecodeChain <- function(
     parts <- c(parts, list(npm))
   }
 
+  if (length(spec$idx$omega) > 0L) {
+    z <- chain[, spec$idx$omega, drop = FALSE]
+    om <- exp(z)
+    colnames(om) <- paste0("omega_", seq_len(ncol(om)))
+    parts <- c(parts, list(om))
+  }
+
   do.call(cbind, parts)
 }
 
@@ -325,6 +332,15 @@ MCMC.Simulate <- function(
   }
 
   ModelParm[c("phi_raw", "z_beta_seasonal", "kappa")] <- NULL
+
+  omega_nm <- paste0("omega_", seq_len(n_virus))
+  if (all(omega_nm %in% names(ModelParm))) {
+    ModelParm[["omega"]] <- as.numeric(unlist(
+      ModelParm[omega_nm],
+      use.names = FALSE
+    ))
+    ModelParm[omega_nm] <- NULL
+  }
 
   OverrideParm <- do.call(
     Parameter.Create,
@@ -578,7 +594,7 @@ MCMC.PostProcess <- function(
   for (i in seq_along(dat)) {
     raw_mat <- as.matrix(dat[[i]])
     decoded_mat <- as.matrix(
-      MCMC.DecodeChain(dat[[i]], include_eta = include_eta)
+      MCMC.DecodeChain(dat[[i]], include_eta = include_eta, n_virus = n_virus)
     )
 
     n_raw <- nrow(raw_mat)
@@ -689,7 +705,7 @@ MCMC.PostProcess <- function(
       # }
 
       raw_npises <- if (length(spec0$idx$npises) > 0L) {
-        spec0$aux_names[spec0$idx$npises]
+        spec0$par_names[spec0$idx$npises]
       } else {
         character()
       }
@@ -714,6 +730,16 @@ MCMC.PostProcess <- function(
     }
     if ("phi" %in% param_names && "phi_raw" %in% names(ESS)) {
       ess_map["phi"] <- "phi_raw"
+    }
+    # omega
+    if (!is.null(spec0) && length(spec0$idx$omega) > 0L) {
+      raw_omega <- spec0$par_names[spec0$idx$omega] # e.g. "log_omega_1", "log_omega_2", ...
+      for (j in seq_along(raw_omega)) {
+        nm <- paste0("omega_", j)
+        if (nm %in% param_names && raw_omega[j] %in% names(ESS)) {
+          ess_map[nm] <- raw_omega[j]
+        }
+      }
     }
 
     hit <- names(ess_map)[ess_map %in% names(ESS)]
